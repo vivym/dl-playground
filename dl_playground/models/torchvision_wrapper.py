@@ -22,6 +22,7 @@ class TorchvisionWrapper(pl.LightningModule):
         weight_decay: float = 0.0,
         norm_weight_decay: float = 0.0,
         label_smoothing: float = 0.0,
+        max_epochs: int = 60,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -58,6 +59,7 @@ class TorchvisionWrapper(pl.LightningModule):
         self.weight_decay = weight_decay
         self.norm_weight_decay = norm_weight_decay
         self.label_smoothing = label_smoothing
+        self.max_epochs = max_epochs
 
         self.accuracy_1 = Accuracy(num_classes=num_classes, top_k=1)
         if num_classes > 5:
@@ -127,7 +129,7 @@ class TorchvisionWrapper(pl.LightningModule):
             weight_decay=self.weight_decay,
         )
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=60
+            optimizer, T_max=self.max_epochs
         )
 
         return {
