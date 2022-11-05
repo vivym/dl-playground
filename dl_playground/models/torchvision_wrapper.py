@@ -1,4 +1,3 @@
-import copy
 from typing import Optional, List, Tuple
 
 import pytorch_lightning as pl
@@ -65,6 +64,9 @@ class TorchvisionWrapper(pl.LightningModule):
         if num_classes > 5:
             self.accuracy_5 = Accuracy(num_classes=num_classes, top_k=5)
 
+    def forward(self, x):
+        return self.model(x)
+
     def _training_and_validation_step(self, batch, batch_idx: int):
         images, labels = batch
 
@@ -112,9 +114,6 @@ class TorchvisionWrapper(pl.LightningModule):
                 "val/acc@5", acc5,
                 on_step=True, on_epoch=True, prog_bar=True,
             )
-
-    def forward(self, x):
-        return self.model(x)
 
     def configure_optimizers(self):
         parameters = set_weight_decay(
