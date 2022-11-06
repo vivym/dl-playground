@@ -62,5 +62,8 @@ if __name__ == "__main__":
             "rich",
             "einops",
             "torchmetrics",
+            "torch-scatter",
+            "torch-sparse",
+            "torch-geometric",
          ],
     )
