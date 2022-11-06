@@ -29,6 +29,8 @@ def create_feature_descriptions():
             tf.io.FixedLenFeature([128], tf.int64, default_value=None),
         "state/tracks_to_predict":
             tf.io.FixedLenFeature([128], tf.int64, default_value=None),
+        "scenario/id":
+            tf.io.FixedLenFeature([1], tf.string, default_value=None),
         "state/current/bbox_yaw":
             tf.io.FixedLenFeature([128, 1], tf.float32, default_value=None),
         "state/current/height":
@@ -147,7 +149,12 @@ def create_feature_descriptions():
     return feature_descriptions
 
 
-def preprocess(root_path: Path, out_path: Path) -> None:
+def preprocess(
+    root_path: Path,
+    out_path: Path,
+    num_shard: int = 1,
+    shard_index: int = 0,
+) -> None:
     if not out_path.exists():
         out_path.mkdir(parents=True)
 
@@ -157,14 +164,19 @@ def preprocess(root_path: Path, out_path: Path) -> None:
         list(root_path.glob("*tfexample.tfrecord*")),
         num_parallel_reads=1,
     )
+    # dataset.shard(num_shard, shard_index)
 
     for i, raw_data in tqdm(enumerate(dataset.as_numpy_iterator())):
         data = tf.io.parse_single_example(raw_data, feature_descriptions)
         new_data = {}
         for key, value in data.items():
-            new_data[key] = value.numpy()
+            if key == "scenario/id":
+                new_data[key] = value.numpy()[0].decode("utf8")
+            else:
+                new_data[key] = value.numpy()
 
-        np.savez_compressed(out_path / f"{i:08d}.npz", **new_data)
+        scenario_id = new_data["scenario/id"]
+        np.savez_compressed(out_path / f"{scenario_id}.npz", **new_data)
 
 
 def main():
