@@ -1,0 +1,55 @@
+data:
+  class_path: dl_playground.data.datasets.MicroseismicEventDataset
+  init_args:
+    root_path: data/microseismic_event
+    in_channel_names: ["waveform", "waveform_frequency_spectrum", "specgram"]
+    train_batch_size: 32
+    val_batch_size: 32
+    num_workers: 8
+    mean: [0.5, 0.5, 0.5]
+    std: [0.25, 0.25, 0.25]
+    repeat: 8
+
+model:
+  class_path: dl_playground.models.TorchvisionWrapper
+  init_args:
+    model_name: swin_v2_t_conv2
+    in_channels: 3
+    num_classes: 2
+    learning_rate: 0.0005
+    momentum: 0.9
+    weight_decay: 0.00002
+    norm_weight_decay: 0.0
+    label_smoothing: 0.1
+    max_epochs: 30
+
+trainer:
+  max_epochs: 30
+  accelerator: "gpu"
+  devices: 1
+
+  logger:
+    - class_path: dl_playground.utils.logger.WandbLogger
+      init_args:
+        project: dl-playground
+        entity: viv
+        name: mec_swin_v2_tiny_conv2_3c
+        notes: "mec_swin_v2_tiny_conv2_3c"
+        tags: ["SwinTConv2", "MEC"]
+        save_code: True
+
+  callbacks:
+    - class_path: RichProgressBar
+      init_args:
+        leave: True
+    - class_path: ModelCheckpoint
+      init_args:
+        filename: "epoch_{epoch:03d}_acc1_{val/acc@1:.02f}"
+        auto_insert_metric_name: False
+        save_top_k: -1
+        every_n_epochs: 1
+    - LearningRateMonitor
+
+  default_root_dir: wandb
+
+seed_everything: 23333

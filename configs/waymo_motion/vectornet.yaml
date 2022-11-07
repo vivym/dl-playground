@@ -2,11 +2,11 @@ data:
   class_path: dl_playground.data.datasets.WaymoMotionDataLoader
   init_args:
     root_path: data/waymo_open_dataset_motion_v_1_1_0
-    train_interval: 10
-    val_interval: 10
-    train_batch_size: 2
+    train_interval: 2
+    val_interval: 8
+    train_batch_size: 96
     val_batch_size: 96
-    num_workers: 0
+    num_workers: 16
 
 model:
   class_path: dl_playground.models.VectorNet
@@ -14,8 +14,8 @@ model:
     agent_in_channels: 11
     roadmap_in_channels: 26
     num_channels: 64
-    num_subgraph_layers: 3
-    num_global_graph_layers: 1
+    num_subgraph_layers: 4
+    num_global_graph_layers: 2
     num_global_graph_heads: 1
     global_graph_dropout: 0.1
     learning_rate: 0.001
@@ -26,15 +26,15 @@ trainer:
   devices: 1
   precision: 16
 
-  # logger:
-  #   - class_path: dl_playground.utils.logger.WandbLogger
-  #     init_args:
-  #       project: dl-playground
-  #       entity: viv
-  #       name: waymo_motion_vectornet
-  #       notes: "waymo_motion_vectornet"
-  #       tags: ["VectorNet", "WaymoMotion"]
-  #       save_code: True
+  logger:
+    - class_path: dl_playground.utils.logger.WandbLogger
+      init_args:
+        project: dl-playground
+        entity: viv
+        name: waymo_motion_vectornet
+        notes: "waymo_motion_vectornet"
+        tags: ["VectorNet", "WaymoMotion"]
+        save_code: True
 
   callbacks:
     - class_path: RichProgressBar

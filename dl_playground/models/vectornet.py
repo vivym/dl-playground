@@ -164,7 +164,7 @@ class VectorNet(pl.LightningModule):
         agents_polylines: Polylines,
         roadgraph_polylines: Polylines,
         edge_indices: torch.Tensor,
-        target_agent_indices: torch.Tensor,
+        target_node_indices: torch.Tensor,
     ):
         agent_polyline_features = self.agent_subgraph(agents_polylines)
         roadgraph_polyline_features = self.roadmap_subgraph(roadgraph_polylines)
@@ -175,7 +175,7 @@ class VectorNet(pl.LightningModule):
         graph_out_features = self.global_graph(graph_in_features, edge_indices)
         graph_features = torch.cat([graph_out_features, graph_in_features], dim=-1)
 
-        target_agent_features = graph_features[target_agent_indices]
+        target_agent_features = graph_features[target_node_indices]
         pred_trajs, logits = self.decoder(target_agent_features)
 
         return pred_trajs, logits
@@ -186,45 +186,55 @@ class VectorNet(pl.LightningModule):
         batch_idx: int,
     ):
         (
-            agents_polylines, roadgraph_polylines, future_polylines,
-            future_agents_indices, future_timestamp_mask, edge_indices
+            agents_polylines, roadgraph_polylines,
+            target_future_states, target_future_mask,
+            target_indices, target_node_indices, edge_indices,
         ) = batch
 
-        torch.save(
-            {
-                "batch_size": agents_polylines.batch_size,
-                "agents_polylines_features": agents_polylines.features,
-                "agents_polylines_agg_indices": agents_polylines.agg_indices,
-                "agents_polylines_batch_indices": agents_polylines.batch_indices,
-                "roadgraph_polylines_features": roadgraph_polylines.features,
-                "roadgraph_polylines_agg_indices": roadgraph_polylines.agg_indices,
-                "roadgraph_polylines_batch_indices": roadgraph_polylines.batch_indices,
-                "future_polylines_features": future_polylines.features,
-                "future_polylines_agg_indices": future_polylines.agg_indices,
-                "future_polylines_batch_indices": future_polylines.batch_indices,
-                "future_agents_indices": future_agents_indices,
-                "future_timestamp_mask": future_timestamp_mask,
-                "edge_indices": edge_indices,
-            },
-            "batch.pth"
-        )
-        exit(0)
+        # torch.save(
+        #     {
+        #         "batch_size": agents_polylines.batch_size,
+        #         "agents_polylines_features": agents_polylines.features,
+        #         "agents_polylines_agg_indices": agents_polylines.agg_indices,
+        #         "agents_polylines_batch_indices": agents_polylines.batch_indices,
+        #         "roadgraph_polylines_features": roadgraph_polylines.features,
+        #         "roadgraph_polylines_agg_indices": roadgraph_polylines.agg_indices,
+        #         "roadgraph_polylines_batch_indices": roadgraph_polylines.batch_indices,
+        #         "future_polylines_features": future_polylines.features,
+        #         "future_polylines_agg_indices": future_polylines.agg_indices,
+        #         "future_polylines_batch_indices": future_polylines.batch_indices,
+        #         "future_agents_indices": future_agents_indices,
+        #         "future_timestamp_mask": future_timestamp_mask,
+        #         "edge_indices": edge_indices,
+        #     },
+        #     "batch.pth"
+        # )
+        # exit(0)
 
         pred_trajs, logits = self.forward(
             agents_polylines=agents_polylines,
             roadgraph_polylines=roadgraph_polylines,
             edge_indices=edge_indices,
-            target_agent_indices=future_agents_indices,
+            target_node_indices=target_node_indices,
         )
 
-        gt_trajs = future_polylines.features[..., :2]
+        gt_trajs = target_future_states[..., :2]
 
-        sq_diff = (pred_trajs - gt_trajs[:, None, :, :]) ** 2.
-        loss_ade, loss_ade_ce = compute_ade_losses(
-            sq_diff, logits, future_timestamp_mask
-        )
+        # sq_diff = (pred_trajs - gt_trajs[:, None, :, :]) ** 2.
+        # loss_ade, loss_ade_ce = compute_ade_losses(
+        #     sq_diff, logits, target_future_mask
+        # )
 
-        loss = loss_ade + loss_ade_ce
+        # loss = loss_ade + loss_ade_ce
+
+        sq_diff = (
+            (pred_trajs - gt_trajs[:, None, :, :]) * target_future_mask[:, None, :, None]
+        ) ** 2
+        sq_diff2 = (pred_trajs - gt_trajs[:, None, :, :])
+        sq_diff2 = sq_diff2 * target_future_mask[:, None, :, None]
+        loss = compute_neg_multi_log_likelihood(sq_diff, logits)
+
+        loss_ade, loss_ade_ce = 0., 0.
 
         return loss, loss_ade, loss_ade_ce
 
@@ -298,3 +308,21 @@ def compute_ade_losses(
     loss_ade_ce = min_ade_ce.mean()
 
     return loss_ade, loss_ade_ce
+
+
+@torch.jit.script
+def compute_neg_multi_log_likelihood(
+    sq_diff: torch.Tensor,
+    logits: torch.Tensor,
+):
+    # sq_diff: N, M, T, 2
+    # logits: N, M
+
+    # N, M, T
+    error = sq_diff.sum(-1)
+    # N, M
+    error = F.log_softmax(logits, dim=-1) - 0.5 * error.sum(-1)
+    # N
+    error = -torch.logsumexp(error, dim=-1)
+
+    return error.mean()

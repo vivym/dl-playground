@@ -147,6 +147,40 @@ def swin_v2_t_conv1(*, weights: Any, progress: bool = True, **kwargs: Any) -> Sw
     return model
 
 
+def swin_v2_t_conv2(*, weights: Any, progress: bool = True, **kwargs: Any) -> SwinTransformer:
+    """
+    Constructs a swin_v2_tiny_conv architecture from
+    `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows <https://arxiv.org/pdf/2103.14030>`_.
+
+    Args:
+        progress (bool, optional): If True, displays a progress bar of the
+            download to stderr. Default is True.
+        **kwargs: parameters passed to the ``torchvision.models.swin_transformer.SwinTransformer``
+            base class. Please refer to the `source code
+            <https://github.com/pytorch/vision/blob/main/torchvision/models/swin_transformer.py>`_
+            for more details about this class.
+    """
+
+    model = _swin_transformer(
+        patch_size=[4, 4],
+        embed_dim=96,
+        depths=[2, 2, 6, 2],
+        num_heads=[3, 6, 12, 24],
+        window_size=[8, 8],
+        stochastic_depth_prob=0.2,
+        weights=weights,
+        progress=progress,
+        block=SwinTransformerBlockV2,
+        downsample_layer=PatchMergingV2,
+        **kwargs,
+    )
+
+    model.features[0].insert(1, CNNBlock(96, 96, 2))
+
+    return model
+
+
 models.swin_m = swin_m
 models.swin_t_conv1 = swin_t_conv1
 models.swin_v2_t_conv1 = swin_v2_t_conv1
+models.swin_v2_t_conv2 = swin_v2_t_conv2
