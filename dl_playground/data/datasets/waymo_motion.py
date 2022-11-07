@@ -60,6 +60,9 @@ def collate_fn(samples):
     roadgraph_polylines, num_roads = Polylines.collate(roadgraph_polylines)
     future_polylines, _ = Polylines.collate(future_polylines)
 
+    print("num_agents", num_agents)
+    print("num_roads", num_roads)
+
     num_nodes = [a + r for a, r in zip(num_agents, num_roads)]
     offset = 0
     future_agents_indices_list = []
@@ -106,6 +109,7 @@ class WaymoMotionDataset(Dataset):
         file_path = self.paths[index]
 
         data = np.load(file_path)
+        print(file_path)
 
         tracks_to_predict = data["state/tracks_to_predict"].astype(bool)
         objects_of_interest = data["state/objects_of_interest"].astype(bool)
@@ -117,8 +121,12 @@ class WaymoMotionDataset(Dataset):
         invalid_agents_mask = ~valid_agents_mask
         num_valid_agents = valid_agents_mask.sum()
 
+        print("0. objects_of_interest", objects_of_interest.sum(), objects_of_interest.nonzero())
+
         tracks_to_predict[invalid_agents_mask] = False
         objects_of_interest[invalid_agents_mask] = False
+
+        print("1. objects_of_interest", objects_of_interest.sum(), objects_of_interest.nonzero())
 
         rng = np.random.default_rng()
         if np.sum(objects_of_interest) < 2:
@@ -127,6 +135,8 @@ class WaymoMotionDataset(Dataset):
             else:
                 indices = rng.choice(np.argwhere(tracks_to_predict), size=2, replace=False, p=None)
                 objects_of_interest[indices] = True
+
+        print("2. objects_of_interest", objects_of_interest.sum(), objects_of_interest.nonzero())
 
         num_past_steps = data["state/past/x"].shape[1]
         num_current_steps = data["state/current/x"].shape[1]

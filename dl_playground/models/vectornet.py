@@ -190,6 +190,26 @@ class VectorNet(pl.LightningModule):
             future_agents_indices, future_timestamp_mask, edge_indices
         ) = batch
 
+        torch.save(
+            {
+                "batch_size": agents_polylines.batch_size,
+                "agents_polylines_features": agents_polylines.features,
+                "agents_polylines_agg_indices": agents_polylines.agg_indices,
+                "agents_polylines_batch_indices": agents_polylines.batch_indices,
+                "roadgraph_polylines_features": roadgraph_polylines.features,
+                "roadgraph_polylines_agg_indices": roadgraph_polylines.agg_indices,
+                "roadgraph_polylines_batch_indices": roadgraph_polylines.batch_indices,
+                "future_polylines_features": future_polylines.features,
+                "future_polylines_agg_indices": future_polylines.agg_indices,
+                "future_polylines_batch_indices": future_polylines.batch_indices,
+                "future_agents_indices": future_agents_indices,
+                "future_timestamp_mask": future_timestamp_mask,
+                "edge_indices": edge_indices,
+            },
+            "batch.pth"
+        )
+        exit(0)
+
         pred_trajs, logits = self.forward(
             agents_polylines=agents_polylines,
             roadgraph_polylines=roadgraph_polylines,

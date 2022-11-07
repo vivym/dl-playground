@@ -21,7 +21,23 @@ def save_fig(x, y, file_path):
     )
     plt.close("all")
     img = Image.open(file_path)
-    print(img.size)
+    img = img.convert("L")
+    img.save(file_path)
+
+
+def save_specgram_fig(x, file_path):
+    fig = plt.figure(figsize=(15, 5))
+    ax = fig.add_subplot(111)
+    ax.set_axis_off()
+    ax.specgram(x, Fs=12000, cmap="gray")
+    fig.tight_layout()
+    fig.savefig(
+        file_path,
+        bbox_inches="tight",
+        pad_inches=0.,
+    )
+    plt.close("all")
+    img = Image.open(file_path)
     img = img.convert("L")
     img.save(file_path)
 
@@ -51,6 +67,9 @@ def main():
 
             image_path = file_path.parent / f"{file_path.stem}_frequency_spectrum.jpg"
             save_fig(freq, mag, image_path)
+
+            image_path = file_path.parent / f"{file_path.stem}_specgram.jpg"
+            save_specgram_fig(x, image_path)
 
     random.seed(233)
     random.shuffle(samples["useful"])
