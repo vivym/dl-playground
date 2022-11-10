@@ -160,19 +160,19 @@ class VectorNet(pl.LightningModule):
 
         # agents_polylines: batch_size, num_agents, timestamps, channels
         # roadgraph_polylines: batch_size, num_roads, road_length, channels
-        print("agents_polylines", agents_polylines.shape)
-        print("agents_polylines_mask", agents_polylines_mask.shape)
-        print("roadgraph_polylines", roadgraph_polylines.shape)
-        print("roadgraph_polylines_mask", roadgraph_polylines_mask.shape)
-        print("objects_of_interest", objects_of_interest.shape)
-        print("agents_motion", agents_motion.shape)
+        # print("agents_polylines", agents_polylines.shape)
+        # print("agents_polylines_mask", agents_polylines_mask.shape)
+        # print("roadgraph_polylines", roadgraph_polylines.shape)
+        # print("roadgraph_polylines_mask", roadgraph_polylines_mask.shape)
+        # print("objects_of_interest", objects_of_interest.shape)
+        # print("agents_motion", agents_motion.shape)
 
         agent_polyline_features = self.agent_subgraph(
             agents_polylines[:, :, :, :self.agent_in_channels],
             agents_polylines_mask,
         )
 
-        print("agent_polyline_features", agent_polyline_features.shape)
+        # print("agent_polyline_features", agent_polyline_features.shape)
 
         roadgraph_polyline_features = self.roadmap_subgraph(
             roadgraph_polylines[:, :, :, :self.roadmap_in_channels],

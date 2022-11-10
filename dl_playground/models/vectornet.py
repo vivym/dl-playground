@@ -24,10 +24,19 @@ class SubGraphLayer(nn.Module):
         self.fc = nn.Linear(in_channels, out_channels)
         self.norm = nn.LayerNorm(out_channels)
 
+        # def hook(module, grad_input, grad_output):
+        #     # print("grad_input", grad_input[0].abs().mean())
+        #     print("grad_output", grad_output[0].abs().mean())
+
+        # self.fc.register_full_backward_hook(hook)
+
     def forward(self, x: Polylines):
+        # print("x.features #1", x.features.abs().mean())
         x.features = self.fc(x.features)
-        x.features = self.norm(x.features)
-        x.features = F.leaky_relu_(x.features)
+        # print("x.features #2", x.features.abs().mean())
+        # print("weights", self.fc.weight.abs().mean())
+        # x.features = self.norm(x.features)
+        x.features = F.leaky_relu(x.features)
 
         agg_features, _ = scatter_max(
             src=x.features,
@@ -157,7 +166,7 @@ class VectorNet(pl.LightningModule):
             num_layers=num_global_graph_layers,
             dropout=global_graph_dropout,
         )
-        self.decoder = Decoder([2 * num_channels, 256, 1024], num_modes=3, timesteps=80)
+        self.decoder = Decoder([2 * num_channels, 1024, 2048], num_modes=3, timesteps=80)
 
     def forward(
         self,
@@ -220,21 +229,21 @@ class VectorNet(pl.LightningModule):
 
         gt_trajs = target_future_states[..., :2]
 
-        # sq_diff = (pred_trajs - gt_trajs[:, None, :, :]) ** 2.
-        # loss_ade, loss_ade_ce = compute_ade_losses(
-        #     sq_diff, logits, target_future_mask
-        # )
+        sq_diff = (pred_trajs - gt_trajs[:, None, :, :]) ** 2.
+        loss_ade, loss_ade_ce = compute_ade_losses(
+            sq_diff, logits, target_future_mask
+        )
 
-        # loss = loss_ade + loss_ade_ce
+        loss = loss_ade + loss_ade_ce
 
-        sq_diff = (
-            (pred_trajs - gt_trajs[:, None, :, :]) * target_future_mask[:, None, :, None]
-        ) ** 2
-        sq_diff2 = (pred_trajs - gt_trajs[:, None, :, :])
-        sq_diff2 = sq_diff2 * target_future_mask[:, None, :, None]
-        loss = compute_neg_multi_log_likelihood(sq_diff, logits)
+        # sq_diff = (
+        #     (pred_trajs - gt_trajs[:, None, :, :]) * target_future_mask[:, None, :, None]
+        # ) ** 2
+        # sq_diff2 = (pred_trajs - gt_trajs[:, None, :, :])
+        # sq_diff2 = sq_diff2 * target_future_mask[:, None, :, None]
+        # loss = compute_neg_multi_log_likelihood(sq_diff, logits)
 
-        loss_ade, loss_ade_ce = 0., 0.
+        # loss_ade, loss_ade_ce = 0., 0.
 
         return loss, loss_ade, loss_ade_ce
 
@@ -283,7 +292,7 @@ class VectorNet(pl.LightningModule):
         )
 
 
-@torch.jit.script
+# @torch.jit.script
 def compute_ade_losses(
     sq_diff: torch.Tensor,
     logits: torch.Tensor,
@@ -296,8 +305,10 @@ def compute_ade_losses(
     # N, M, T
     l2 = torch.sqrt(sq_diff.sum(-1))
     gt_mask = gt_mask[:, None, :].expand_as(l2).contiguous()
-    # # N, M
-    ade = l2[gt_mask].mean(-1)
+    # N, M
+    ade = (l2 * gt_mask).sum(-1) / (gt_mask.sum(-1) + 1e-4)
+    # ade = l2[gt_mask].mean(-1)
+    # print("ade", ade.shape, ade.mean())
     # N
     min_ade, min_indices = ade.min(-1)
     # N

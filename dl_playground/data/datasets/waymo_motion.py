@@ -65,13 +65,16 @@ def collate_fn(samples):
     target_future_mask = torch.stack(target_future_mask, dim=0)
 
     target_indices = torch.as_tensor(target_indices, dtype=torch.int64)
-
     target_node_indices = target_indices.clone()
+
     num_nodes = [a + r for a, r in zip(num_agents, num_roads)]
-    offset = 0
+    offset_agent = 0
+    offset_node = 0
     for i in range(batch_size):
-        target_node_indices[i] += offset
-        offset += num_nodes[i]
+        target_indices[i] += offset_agent
+        target_node_indices[i] += offset_node
+        offset_agent += num_agents[i]
+        offset_node += num_nodes[i]
 
     offset = 0
     edge_indices_list = []
@@ -118,10 +121,8 @@ class WaymoMotionDataset(Dataset):
         ], axis=-1).astype(bool)
         agents_future_mask = data["state/future/valid"].astype(bool)
 
-        # print("valid", data["state/current/valid"].sum())
-
         # assert (data["state/current/x"][data["state/current/valid"].astype(bool)] > 0).all(), (
-        #     data["state/current/x"][data["state/current/valid"].astype(bool)]
+        #     data["state/current/x"][data["state/current/valid"].astype(bool)], file_path
         # )
         # assert (data["state/current/x"][data["state/current/valid"].astype(bool).reshape(-1)] > 0).all(), (
         #     data["state/current/x"][data["state/current/valid"].astype(bool).reshape(-1)]
@@ -133,27 +134,21 @@ class WaymoMotionDataset(Dataset):
 
         tracks_to_predict = data["state/tracks_to_predict"].astype(bool)
         tracks_to_predict[invalid_agents_mask] = False
+        tracks_to_predict[~agents_future_mask.any(-1)] = False
 
         agents_states_mask = agents_states_mask[valid_agents_mask]
         agents_future_mask = agents_future_mask[valid_agents_mask]
         tracks_to_predict = tracks_to_predict[valid_agents_mask]
 
-        assert agents_future_mask[tracks_to_predict].any(-1).all()
+        if np.sum(tracks_to_predict) == 0:
+            return None
 
         if self.is_training:
-            valid_target_agents_mask = agents_future_mask.any(-1)
-            if np.sum(valid_target_agents_mask) == 0:
-                return None
-
-            target_index = np.random.choice(
-                np.argwhere(valid_target_agents_mask).reshape(-1), size=1, replace=False
-            )[0]
-        else:
-            if np.sum(tracks_to_predict) == 0:
-                return None
             target_index = np.random.choice(
                 np.argwhere(tracks_to_predict).reshape(-1), size=1, replace=False
             )[0]
+        else:
+            target_index = np.argwhere(tracks_to_predict).reshape(-1)[0]
 
         num_past_steps = data["state/past/x"].shape[1]
         num_current_steps = data["state/current/x"].shape[1]
@@ -264,6 +259,8 @@ class WaymoMotionDataset(Dataset):
         u, v = torch.meshgrid(range_indices, range_indices, indexing="ij")
         edge_indices = torch.stack([u, v], dim=0)
         edge_indices = edge_indices.flatten(1)
+
+        # print("future_xy", target_future_states[target_future_mask, :2])
 
         return (
             agents_polylines, roadgraph_polylines,

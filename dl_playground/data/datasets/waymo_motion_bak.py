@@ -102,7 +102,7 @@ class WaymoMotionDataset(Dataset):
         ], axis=1)
         roadgraph_vecs_mask = data["roadgraph_samples/valid"].astype(bool).reshape(-1)
 
-        print("roadgraph_vecs", roadgraph_vecs.shape)
+        # print("roadgraph_vecs", roadgraph_vecs.shape)
 
         _, roadgraph_vecs_channels = roadgraph_vecs.shape
 
