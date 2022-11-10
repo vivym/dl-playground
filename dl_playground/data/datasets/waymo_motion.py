@@ -51,44 +51,36 @@ class Polylines:
 
 
 def collate_fn(samples):
-    batch_size = len(samples)
     (
-        agents_polylines, roadgraph_polylines,
-        target_future_states, target_future_mask,
-        target_indices, edge_indices,
+        agents_polylines, agents_polylines_mask,
+        roadgraph_polylines, roadgraph_polylines_mask,
+        targets, targets_mask,
+        tracks_to_predict, objects_of_interest,
+        agents_motion,
     ) = map(list, zip(*samples))
 
-    agents_polylines, num_agents = Polylines.collate(agents_polylines)
-    roadgraph_polylines, num_roads = Polylines.collate(roadgraph_polylines)
+    batch_size = len(roadgraph_polylines)
+    max_num_roads = np.max([polyline.shape[0] for polyline in roadgraph_polylines])
+    max_road_length = np.max([polyline.shape[1] for polyline in roadgraph_polylines])
+    roadgraph_vec_channels = roadgraph_polylines[0].shape[2]
 
-    target_future_states = torch.stack(target_future_states, dim=0)
-    target_future_mask = torch.stack(target_future_mask, dim=0)
-
-    target_indices = torch.as_tensor(target_indices, dtype=torch.int64)
-    target_node_indices = target_indices.clone()
-
-    num_nodes = [a + r for a, r in zip(num_agents, num_roads)]
-    offset_agent = 0
-    offset_node = 0
-    for i in range(batch_size):
-        target_indices[i] += offset_agent
-        target_node_indices[i] += offset_node
-        offset_agent += num_agents[i]
-        offset_node += num_nodes[i]
-
-    offset = 0
-    edge_indices_list = []
-    for edge_indices_i, num_nodes_i in zip(edge_indices, num_nodes):
-        num_edges_i = edge_indices_i.shape[1]
-        assert num_nodes_i ** 2 == num_edges_i
-        edge_indices_list.append(edge_indices_i + offset)
-        offset += num_nodes_i
-    edge_indices = torch.cat(edge_indices_list, dim=-1)
+    roadgraph_polylines_padded = torch.zeros(
+        batch_size, max_num_roads, max_road_length, roadgraph_vec_channels
+    )
+    roadgraph_polylines_mask_padded = torch.zeros(
+        batch_size, max_num_roads, max_road_length, dtype=torch.bool
+    )
+    for batch_ind in range(batch_size):
+        num_roads, road_length, _ = roadgraph_polylines[batch_ind].shape
+        roadgraph_polylines_padded[batch_ind, :num_roads, :road_length, :] = roadgraph_polylines[batch_ind]
+        roadgraph_polylines_mask_padded[batch_ind, :num_roads, :road_length] = roadgraph_polylines_mask[batch_ind]
 
     return (
-        agents_polylines, roadgraph_polylines,
-        target_future_states, target_future_mask,
-        target_indices, target_node_indices, edge_indices,
+        torch.stack(agents_polylines), torch.stack(agents_polylines_mask),
+        roadgraph_polylines_padded, roadgraph_polylines_mask_padded,
+        torch.stack(targets), torch.stack(targets_mask),
+        torch.stack(tracks_to_predict), torch.stack(objects_of_interest),
+        torch.stack(agents_motion),
     )
 
 
@@ -116,156 +108,103 @@ class WaymoMotionDataset(Dataset):
 
         data = np.load(file_path)
 
-        agents_states_mask = np.concatenate([
-            data["state/past/valid"], data["state/current/valid"]
-        ], axis=-1).astype(bool)
-        agents_future_mask = data["state/future/valid"].astype(bool)
-
-        # assert (data["state/current/x"][data["state/current/valid"].astype(bool)] > 0).all(), (
-        #     data["state/current/x"][data["state/current/valid"].astype(bool)], file_path
-        # )
-        # assert (data["state/current/x"][data["state/current/valid"].astype(bool).reshape(-1)] > 0).all(), (
-        #     data["state/current/x"][data["state/current/valid"].astype(bool).reshape(-1)]
-        # )
-
-        valid_agents_mask = agents_states_mask[:, -1]
-        invalid_agents_mask = ~valid_agents_mask
-        num_valid_agents = valid_agents_mask.sum()
-
-        tracks_to_predict = data["state/tracks_to_predict"].astype(bool)
-        tracks_to_predict[invalid_agents_mask] = False
-        tracks_to_predict[~agents_future_mask.any(-1)] = False
-
-        agents_states_mask = agents_states_mask[valid_agents_mask]
-        agents_future_mask = agents_future_mask[valid_agents_mask]
-        tracks_to_predict = tracks_to_predict[valid_agents_mask]
-
-        if np.sum(tracks_to_predict) == 0:
-            return None
-
-        if self.is_training:
-            target_index = np.random.choice(
-                np.argwhere(tracks_to_predict).reshape(-1), size=1, replace=False
-            )[0]
-        else:
-            target_index = np.argwhere(tracks_to_predict).reshape(-1)[0]
-
-        num_past_steps = data["state/past/x"].shape[1]
-        num_current_steps = data["state/current/x"].shape[1]
-        num_future_steps = data["state/future/x"].shape[1]
+        _, num_past_steps = data["state/past/x"].shape
+        _, num_current_steps = data["state/current/x"].shape
 
         agents_type_one_hot = np.eye(5)[data["state/type"].astype(np.int64).flatten()].astype(np.float32)
-        agents_past_states = np.concatenate([
+
+        past_agents = np.concatenate([
             data["state/past/x"][:, :, None],
             data["state/past/y"][:, :, None],
-            data["state/past/bbox_yaw"][:, :, None],
-            data["state/past/velocity_x"][:, :, None],
-            data["state/past/velocity_y"][:, :, None],
-            data["state/past/vel_yaw"][:, :, None],
+            data["state/past/z"][:, :, None],
             np.tile(agents_type_one_hot[:, None, :], (1, num_past_steps, 1)),
-        ], axis=-1)
+        ], axis=2)
 
-        agents_current_states = np.concatenate([
+        current_agents = np.concatenate([
             data["state/current/x"][:, :, None],
             data["state/current/y"][:, :, None],
-            data["state/current/bbox_yaw"][:, :, None],
-            data["state/current/velocity_x"][:, :, None],
-            data["state/current/velocity_y"][:, :, None],
-            data["state/current/vel_yaw"][:, :, None],
+            data["state/current/z"][:, :, None],
             np.tile(agents_type_one_hot[:, None, :], (1, num_current_steps, 1)),
-        ], axis=-1)
+        ], axis=2)
 
-        agents_states = np.concatenate([agents_past_states, agents_current_states], axis=1)
-
-        # T, C
-        target_future_states = np.concatenate([
-            data["state/future/x"][valid_agents_mask, :, None],
-            data["state/future/y"][valid_agents_mask, :, None],
-            data["state/future/bbox_yaw"][valid_agents_mask, :, None],
-            data["state/future/velocity_x"][valid_agents_mask, :, None],
-            data["state/future/velocity_y"][valid_agents_mask, :, None],
-            data["state/future/vel_yaw"][valid_agents_mask, :, None],
-            np.tile(agents_type_one_hot[valid_agents_mask, None, :], (num_future_steps, 1)),
-        ], axis=-1)
-        target_future_states = target_future_states[target_index]
-
-        # A, T, C
-        agents_states = agents_states[valid_agents_mask]
-
-        target_current_xy = agents_states[target_index, -1, :2]
-        target_current_yaw = agents_states[target_index, -1, 2]
-
-        rot_matrix = np.asarray([
-            [np.cos(target_current_yaw), -np.sin(target_current_yaw)],
-            [np.sin(target_current_yaw), np.cos(target_current_yaw)],
-        ])
-
-        # N, C
-        agents_states = agents_states[agents_states_mask]
-        agents_states[:, :2] = (agents_states[:, :2] - target_current_xy[None, :]) @ rot_matrix
-
-        target_future_states[:, :2] = (target_future_states[:, :2] - target_current_xy[None, :]) @ rot_matrix
-
-        agents_states = torch.from_numpy(agents_states)
-        agents_states_mask = torch.from_numpy(agents_states_mask)
-        target_future_states = torch.from_numpy(target_future_states)
-        target_future_mask = torch.from_numpy(agents_future_mask[target_index])
-
-        if target_future_states[target_future_mask, :2].max() > 1e+3:
-            print("target_index", target_index)
-            print("agents_states_mask", agents_states_mask[target_index])
-
-            print("target_current_xy", target_current_xy)
-            print("target_future_states", target_future_states[:5, :2])
-
-            assert target_future_states[target_future_mask, :2].max() < 1e+3, (
-                target_future_states[target_future_mask, :2], target_future_states[target_future_mask, :2].shape, target_future_mask
-            )
-
-        agents_polylines = Polylines(
-            features=agents_states,                                     # N, C
-            agg_indices=agents_states_mask.nonzero(as_tuple=True)[0],   # N, (A, L, C) -> (A, C)
-        )
+        agents_polylines = np.concatenate([current_agents, past_agents], axis=1)
+        agents_polylines_mask = np.concatenate([
+            data["state/current/valid"], data["state/past/valid"]
+        ], axis=1).astype(bool)
 
         roadgraph_type = data["roadgraph_samples/type"].astype(np.int64).flatten()
         roadgraph_type_one_hot = np.eye(20)[roadgraph_type].astype(np.float32)
 
-        roadgraph_states = np.concatenate([
+        roadgraph_id_set = set([
+            ind for ind in data["roadgraph_samples/id"].reshape(-1).tolist() if ind > 0
+        ])
+        roadgraph_vecs = np.concatenate([
             data["roadgraph_samples/xyz"],
             data["roadgraph_samples/dir"],
             roadgraph_type_one_hot,
+        ], axis=1)
+        roadgraph_vecs_mask = data["roadgraph_samples/valid"].astype(bool).reshape(-1)
+
+        _, roadgraph_vecs_channels = roadgraph_vecs.shape
+
+        num_roads = len(roadgraph_id_set)
+        max_road_length = np.max([
+            np.sum(data["roadgraph_samples/id"].flatten() == ind) for ind in roadgraph_id_set
+        ])
+
+        roadgraph_polylines = np.zeros(shape=(num_roads, max_road_length, roadgraph_vecs_channels))
+        roadgraph_polylines_mask = np.zeros(shape=(num_roads, max_road_length), dtype=bool)
+
+        for i, ind in enumerate(roadgraph_id_set):
+            indices = data["roadgraph_samples/id"].flatten() == ind
+            polyline_length = np.sum(indices)
+            roadgraph_polylines[i, :polyline_length, :] = roadgraph_vecs[indices, :]
+            roadgraph_polylines_mask[i, :polyline_length] = roadgraph_vecs_mask[indices]
+
+        _, num_future_steps = data["state/future/x"].shape
+        targets = np.dstack([
+            data["state/future/x"],
+            data["state/future/y"],
+            data["state/future/z"],
+            np.tile(data["state/type"].reshape(-1, 1), (1, num_future_steps)),
+        ])
+        targets_mask = data["state/future/valid"].astype(bool)
+
+        tracks_to_predict = data["state/tracks_to_predict"]
+        objects_of_interest = data["state/objects_of_interest"]
+
+        agents_motion = np.concatenate([
+            data["state/current/velocity_x"],
+            data["state/current/velocity_y"],
+            data["state/current/vel_yaw"],
         ], axis=-1)
-        roadgraph_states_mask = data["roadgraph_samples/valid"].astype(bool).reshape(-1)
 
-        roadgraph_states = roadgraph_states[roadgraph_states_mask]
-        roadgraph_states[:, :2] = (roadgraph_states[:, :2] - target_current_xy[None, :]) @ rot_matrix
+        rng = np.random.default_rng()
+        if np.sum(objects_of_interest == 1) < 2:
+            if np.sum(tracks_to_predict == 1) < 2:
+                return None
+            else:
+                indices = rng.choice(np.argwhere(tracks_to_predict == 1), size=2, replace=False, p=None)
+                objects_of_interest[indices] = 1
 
-        roadgraph_id = data["roadgraph_samples/id"].reshape(-1)
-        roadgraph_id = roadgraph_id[roadgraph_states_mask]
-        unique_roadgraph_id, roadgraph_id = np.unique(roadgraph_id, return_inverse=True)
-        num_valid_roads = unique_roadgraph_id.shape[0]
-
-        roadgraph_states = torch.from_numpy(roadgraph_states)
-        roadgraph_id = torch.from_numpy(roadgraph_id)
-
-        roadgraph_polylines = Polylines(
-            features=roadgraph_states,  # N, C
-            agg_indices=roadgraph_id,   # N, (R, L, C) -> (R, C)
+        origin = np.mean(
+            agents_polylines[np.argwhere(objects_of_interest == 1).reshape(-1), 0, :3], axis=0
         )
 
-        # num_valid_agents + num_valid_roads
-        num_nodes = num_valid_agents + num_valid_roads
-        range_indices = torch.arange(num_nodes, dtype=torch.int64)
-        u, v = torch.meshgrid(range_indices, range_indices, indexing="ij")
-        edge_indices = torch.stack([u, v], dim=0)
-        edge_indices = edge_indices.flatten(1)
-
-        # print("future_xy", target_future_states[target_future_mask, :2])
+        agents_polylines[agents_polylines_mask, :3] = agents_polylines[agents_polylines_mask, :3] - origin
+        roadgraph_polylines[roadgraph_polylines_mask, :3] = roadgraph_polylines[roadgraph_polylines_mask, :3] - origin
+        targets[targets_mask, :3] = targets[targets_mask, :3] - origin
 
         return (
-            agents_polylines, roadgraph_polylines,
-            target_future_states, target_future_mask,
-            target_index, edge_indices,
+            torch.as_tensor(agents_polylines),
+            torch.as_tensor(agents_polylines_mask),
+            torch.as_tensor(roadgraph_polylines),
+            torch.as_tensor(roadgraph_polylines_mask),
+            torch.as_tensor(targets),
+            torch.as_tensor(targets_mask),
+            torch.as_tensor(tracks_to_predict),
+            torch.as_tensor(objects_of_interest),
+            torch.as_tensor(agents_motion),
         )
 
     def __getitem__(self, index: int):
@@ -274,7 +213,6 @@ class WaymoMotionDataset(Dataset):
             if data is not None:
                 return data
 
-            # print("skip", index)
             index += 1
             if index >= len(self.paths):
                 index = 0

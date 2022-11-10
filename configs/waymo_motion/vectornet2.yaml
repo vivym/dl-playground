@@ -9,7 +9,7 @@ data:
     num_workers: 16
 
 model:
-  class_path: dl_playground.models.VectorNet
+  class_path: dl_playground.models.vectornet2.VectorNet
   init_args:
     agent_in_channels: 8
     roadmap_in_channels: 26

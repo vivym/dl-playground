@@ -2,7 +2,7 @@ data:
   class_path: dl_playground.data.datasets.waymo_motion_bak.WaymoMotionDataLoader
   init_args:
     root_path: data/waymo_open_dataset_motion_v_1_1_0
-    train_interval: 40
+    train_interval: 100
     val_interval: 40
     train_batch_size: 16
     val_batch_size: 16

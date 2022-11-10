@@ -26,7 +26,6 @@ class MLP(nn.Module):
         mask: torch.Tensor,
     ):
         x = x[mask]
-
         x = self.fc(x)
         x = self.norm(x)
         x = F.leaky_relu(x)
@@ -44,7 +43,7 @@ class MLP(nn.Module):
         return torch.cat([out, pool], dim=-1)
 
 
-class SubGraph(nn.Module):
+class SubGraph2(nn.Module):
     def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
 
@@ -70,58 +69,58 @@ class SubGraph(nn.Module):
         return x
 
 
-# class SubGraphLayer(nn.Module):
-#     def __init__(
-#         self,
-#         in_channels: int,
-#         out_channels: int,
-#     ):
-#         super().__init__()
+class SubGraphLayer(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+    ):
+        super().__init__()
 
-#         self.in_channels = in_channels
-#         self.out_channels = out_channels
+        self.in_channels = in_channels
+        self.out_channels = out_channels
 
-#         self.fc = nn.Linear(in_channels, out_channels)
-#         self.norm = nn.LayerNorm(out_channels)
+        self.fc = nn.Linear(in_channels, out_channels)
+        self.norm = nn.LayerNorm(out_channels)
 
-#     def forward(self, x: Polylines):
-#         x.features = self.fc(x.features)
-#         x.features = F.leaky_relu(x.features)
+    def forward(self, x: Polylines):
+        x.features = self.fc(x.features)
+        x.features = F.leaky_relu(x.features)
 
-#         agg_features, _ = scatter_max(
-#             src=x.features,
-#             index=x.agg_indices,
-#             dim=0,
-#         )
+        agg_features, _ = scatter_max(
+            src=x.features,
+            index=x.agg_indices,
+            dim=0,
+        )
 
-#         x.features = torch.cat([
-#             x.features, agg_features[x.agg_indices]
-#         ], dim=-1)
+        x.features = torch.cat([
+            x.features, agg_features[x.agg_indices]
+        ], dim=-1)
 
-#         return x, agg_features
+        return x, agg_features
 
 
-# class SubGraph(nn.Module):
-#     def __init__(
-#         self,
-#         in_channels: int,
-#         out_channels: int,
-#         num_layers: int = 3,
-#     ):
-#         super().__init__()
+class SubGraph(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        num_layers: int = 3,
+    ):
+        super().__init__()
 
-#         self.in_channels = in_channels
-#         self.out_channels = out_channels
+        self.in_channels = in_channels
+        self.out_channels = out_channels
 
-#         self.layers = nn.ModuleList([
-#             SubGraphLayer(in_channels if i == 0 else 2 * out_channels, out_channels)
-#             for i in range(num_layers)
-#         ])
+        self.layers = nn.ModuleList([
+            SubGraphLayer(in_channels if i == 0 else 2 * out_channels, out_channels)
+            for i in range(num_layers)
+        ])
 
-#     def forward(self, x: Polylines) -> torch.Tensor:
-#         for layer in self.layers:
-#             x, agg_features = layer(x)
-#         return agg_features
+    def forward(self, x: Polylines) -> torch.Tensor:
+        for layer in self.layers:
+            x, agg_features = layer(x)
+        return agg_features
 
 
 class GlobalGraph(nn.Module):
@@ -151,32 +150,6 @@ class GlobalGraph(nn.Module):
         return x
 
 
-# class GNN(nn.Module):
-#     def __init__(
-#         self,
-#         num_channels: int,
-#         num_heads: int,
-#     ):
-#         super().__init__()
-
-#         self.attn = nn.MultiheadAttention(
-#             embed_dim=num_channels, num_heads=num_heads
-#         )
-
-#     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-#         query = x / (torch.sum(x ** 2, dim=-1, keepdim=True) ** 0.5 + 1e-6)
-#         query = query.transpose(0, 1)
-#         key = query
-#         value = x.transpose(0, 1)
-
-#         x, _ = self.attn(
-#             query=query, key=key, value=value, key_padding_mask=~mask
-#         )
-#         x = x.transpose(0, 1)
-
-#         return x
-
-
 class Decoder(nn.Module):
     def __init__(
         self,
@@ -204,12 +177,9 @@ class Decoder(nn.Module):
         pred_trajs = self.reg_head(x)
         pred_trajs = pred_trajs.view(-1, self.num_modes, self.timesteps, 2)
 
-        prob = self.cls_head(x)
-        prob = prob.sum(0)
-        prob = prob - prob.max()
-        prob = F.softmax(prob, dim=0)
+        logits = self.cls_head(x)
 
-        return pred_trajs, prob
+        return pred_trajs, logits
 
 
 class VectorNet(pl.LightningModule):
@@ -240,10 +210,10 @@ class VectorNet(pl.LightningModule):
         #     roadmap_in_channels, num_channels, num_layers=num_subgraph_layers
         # )
         self.agent_subgraph = SubGraph(
-            agent_in_channels, num_channels
+            agent_in_channels, num_channels, num_layers=num_subgraph_layers
         )
         self.roadmap_subgraph = SubGraph(
-            roadmap_in_channels, num_channels
+            roadmap_in_channels, num_channels, num_layers=num_subgraph_layers
         )
         self.global_graph = GlobalGraph(
             num_channels,
@@ -252,7 +222,7 @@ class VectorNet(pl.LightningModule):
             dropout=global_graph_dropout,
         )
         # self.global_graph = GNN(num_channels, num_heads=1)
-        self.decoder = Decoder([2 * num_channels + 5, 1024, 2048], num_modes=3, timesteps=80)
+        self.decoder = Decoder([2 * num_channels + 2, 1024, 2048], num_modes=3, timesteps=80)
 
     def loss_fn(self, trajs, probs, targets):
         num_timesteps = trajs.shape[2]
@@ -278,6 +248,8 @@ class VectorNet(pl.LightningModule):
         roadgraph_polylines_mask: torch.Tensor,
         objects_of_interest: torch.Tensor,
         agents_motion: torch.Tensor,
+        targets: torch.Tensor,
+        targets_mask: torch.Tensor,
     ):
         batch_size = agents_polylines.shape[0]
 
@@ -290,17 +262,48 @@ class VectorNet(pl.LightningModule):
         # print("objects_of_interest", objects_of_interest.shape)
         # print("agents_motion", agents_motion.shape)
 
-        agent_polyline_features = self.agent_subgraph(
-            agents_polylines[:, :, :, :self.agent_in_channels],
-            agents_polylines_mask,
-        )
+        batch_size, num_agents, timestamps, channels = agents_polylines.shape
+        tmp_mask = agents_polylines_mask.view(batch_size * num_agents, timestamps)
+        valid_agents = tmp_mask.any(-1)
+        tmp_in = agents_polylines.view(batch_size * num_agents, timestamps, channels)
+        tmp_in2 = tmp_in[valid_agents]
+        tmp_mask_2 = tmp_mask[valid_agents]
 
-        # print("agent_polyline_features", agent_polyline_features.shape)
+        tmp_in = tmp_in2[tmp_mask_2]
 
-        roadgraph_polyline_features = self.roadmap_subgraph(
-            roadgraph_polylines[:, :, :, :self.roadmap_in_channels],
-            roadgraph_polylines_mask,
-        )
+        agg_indices = tmp_mask_2.nonzero(as_tuple=True)[0]
+        tmp_agents_polylines = Polylines(tmp_in, agg_indices)
+        tmp_out = self.agent_subgraph(tmp_agents_polylines)
+
+        tmp_out_3 = torch.zeros(batch_size * num_agents, tmp_out.shape[-1], dtype=tmp_out.dtype, device=tmp_in2.device)
+        tmp_out_3[valid_agents] = tmp_out
+
+        agent_polyline_features = tmp_out_3.view(batch_size, num_agents, tmp_out.shape[-1])
+
+        # roadgraph_polyline_features = self.roadmap_subgraph(
+        #     roadgraph_polylines[:, :, :, :self.roadmap_in_channels],
+        #     roadgraph_polylines_mask,
+        # )
+
+        ################################################################
+        batch_size, num_roads, timestamps, channels = roadgraph_polylines.shape
+        tmp_mask = roadgraph_polylines_mask.view(batch_size * num_roads, timestamps)
+        valid_roads = tmp_mask.any(-1)
+        tmp_in = roadgraph_polylines.view(batch_size * num_roads, timestamps, channels)
+        tmp_in2 = tmp_in[valid_roads]
+        tmp_mask_2 = tmp_mask[valid_roads]
+
+        tmp_in = tmp_in2[tmp_mask_2]
+
+        agg_indices = tmp_mask_2.nonzero(as_tuple=True)[0]
+        tmp_roads_polylines = Polylines(tmp_in, agg_indices)
+        tmp_out = self.roadmap_subgraph(tmp_roads_polylines)
+
+        tmp_out_3 = torch.zeros(batch_size * num_roads, tmp_out.shape[-1], dtype=tmp_out.dtype, device=tmp_in2.device)
+        tmp_out_3[valid_roads] = tmp_out
+
+        roadgraph_polyline_features = tmp_out_3.view(batch_size, num_roads, tmp_out.shape[-1])
+        ################################################################
 
         agent_feature_mask = agents_polylines_mask.any(2)
         roadgraph_feature_mask = roadgraph_polylines_mask.any(2)
@@ -339,6 +342,20 @@ class VectorNet(pl.LightningModule):
 
         graph_features = torch.cat([graph_out_features, graph_in_features], dim=2)
 
+        # tmp_inds = objects_of_interest.argmax(-1)
+        # tmp = graph_features.gather(1, index=tmp_inds[:, None, None].repeat(1, 1, graph_features.shape[-1]))
+        # tmp = tmp.squeeze(1)
+
+        # pred_trajs, logits = self.decoder(tmp)
+        # gt_trajs = targets.gather(1, index=tmp_inds[:, None, None, None].repeat(1, 1, targets.shape[-2], targets.shape[-1]))
+        # gt_trajs = gt_trajs[..., :2]
+        # gt_trajs = gt_trajs.squeeze(1)
+
+        # gt_mask = targets_mask.gather(1, index=tmp_inds[:, None, None].repeat(1, 1, targets_mask.shape[-1]))
+        # gt_mask = gt_mask.squeeze(1)
+
+        # return pred_trajs, logits, gt_trajs, gt_mask
+
         trajs_list, probs_list, agent_inds_list = [], [], []
         for i in range(batch_size):
             agent_inds = torch.nonzero((objects_of_interest == 1)[i], as_tuple=True)[0]
@@ -346,10 +363,14 @@ class VectorNet(pl.LightningModule):
             target_features = torch.cat([
                 graph_features[i, agent_inds, :],
                 agents_polylines[i, agent_inds, 0, :2],
-                agents_motion[i, agent_inds, :],
+                # agents_motion[i, agent_inds, :],
             ], dim=1)
+            # target_features = graph_features[i, agent_inds, :]
 
             decoded_trajs, decoded_probs = self.decoder(target_features)
+            decoded_probs = decoded_probs.sum(0)
+            decoded_probs = decoded_probs - decoded_probs.max()
+            decoded_probs = F.softmax(decoded_probs, dim=0)
             trajs_list.append(decoded_trajs)
             probs_list.append(decoded_probs)
             agent_inds_list.append(agent_inds)
@@ -369,6 +390,7 @@ class VectorNet(pl.LightningModule):
             agents_motion,
         ) = batch
 
+        # pred_trajs, logits, gt_trajs, gt_mask = self.forward(
         trajs_list, probs_list, agent_inds_list = self.forward(
             # agents_polylines=agents_polylines,
             # roadgraph_polylines=roadgraph_polylines,
@@ -380,7 +402,15 @@ class VectorNet(pl.LightningModule):
             roadgraph_polylines_mask=roadgraph_polylines_mask,
             objects_of_interest=objects_of_interest,
             agents_motion=agents_motion,
+            targets=targets, targets_mask=targets_mask,
         )
+
+        # sq_diff = (pred_trajs - gt_trajs[:, None, :, :]) ** 2.
+        # loss_ade, loss_ade_ce = compute_ade_losses(
+        #     sq_diff, logits, gt_mask
+        # )
+
+        # loss = loss_ade + loss_ade_ce
 
         loss_ade, loss_ade_ce = 0, 0
         num_tracks_to_predict = 0
