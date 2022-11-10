@@ -27,15 +27,15 @@ trainer:
   accelerator: "gpu"
   devices: 1
 
-  logger:
-    - class_path: dl_playground.utils.logger.WandbLogger
-      init_args:
-        project: dl-playground
-        entity: viv
-        name: mec_swin_tiny_1e-4
-        notes: "mec_swin_tiny"
-        tags: ["SwinT", "MEC"]
-        save_code: True
+  # logger:
+  #   - class_path: dl_playground.utils.logger.WandbLogger
+  #     init_args:
+  #       project: dl-playground
+  #       entity: viv
+  #       name: mec_swin_tiny_1e-4
+  #       notes: "mec_swin_tiny"
+  #       tags: ["SwinT", "MEC"]
+  #       save_code: True
 
   callbacks:
     - class_path: RichProgressBar

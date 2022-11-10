@@ -1,4 +1,5 @@
 from typing import Optional, List, Tuple
+import json
 
 import pytorch_lightning as pl
 import torch
@@ -114,6 +115,24 @@ class TorchvisionWrapper(pl.LightningModule):
                 "val/acc@5", acc5,
                 on_step=True, on_epoch=True, prog_bar=True,
             )
+
+    def test_step(self, batch, batch_idx: int):
+        images, labels = batch
+
+        logits = self.forward(images)
+
+        preds = logits.argmax(-1).cpu()
+
+        return preds, labels
+
+    def test_epoch_end(self, outputs):
+        results = {}
+        for preds, labels in outputs:
+            for pred, file_name in zip(preds, labels):
+                results[file_name] = int(pred)
+
+        with open("results.json", "w") as f:
+            json.dump(results, f)
 
     def configure_optimizers(self):
         parameters = set_weight_decay(

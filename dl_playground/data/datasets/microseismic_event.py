@@ -76,7 +76,7 @@ class MicroseismicEventDataset(pl.LightningDataModule):
         self.mean = mean
         self.std = std
 
-    def train_dataloader(self):
+    def train_dataloader(self) -> DataLoader:
         transform = T.Compose([
             T.ToTensor(),
             T.Resize((224, 672)),
@@ -99,7 +99,7 @@ class MicroseismicEventDataset(pl.LightningDataModule):
             pin_memory=True,
         )
 
-    def val_dataloader(self):
+    def val_dataloader(self) -> DataLoader:
         transform = T.Compose([
             T.ToTensor(),
             T.Resize((224, 672)),
@@ -117,6 +117,29 @@ class MicroseismicEventDataset(pl.LightningDataModule):
         return DataLoader(
             dataset,
             batch_size=self.val_batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+
+    def test_dataloader(self):
+        transform = T.Compose([
+            T.ToTensor(),
+            T.Resize((224, 672)),
+            T.Normalize(mean=self.mean, std=self.std),
+        ])
+
+        dataset = MicroseismicEventDatasetImpl(
+            root_path=self.root_path,
+            split="test",
+            in_channels=self.in_channels,
+            repeat=self.repeat,
+            transform=transform,
+        )
+
+        return DataLoader(
+            dataset,
+            batch_size=self.test_batch_size,
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
