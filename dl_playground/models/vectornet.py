@@ -5,13 +5,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch_geometric.nn as gnn
-from torch_scatter import scatter_max, scatter_mean
+from torch_scatter import scatter_max
 
 from dl_playground.data.datasets.waymo_motion import Polylines
 
 
-class MLP(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int):
+class SubGraphLayer(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+    ):
         super().__init__()
 
         self.in_channels = in_channels
@@ -20,108 +24,44 @@ class MLP(nn.Module):
         self.fc = nn.Linear(in_channels, out_channels)
         self.norm = nn.LayerNorm(out_channels)
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        mask: torch.Tensor,
-    ):
-        x = x[mask]
+    def forward(self, x: Polylines):
+        x.features = self.fc(x.features)
+        x.features = F.leaky_relu(x.features)
 
-        x = self.fc(x)
-        x = self.norm(x)
-        x = F.leaky_relu(x)
-
-        out = torch.empty(
-            mask.shape + (self.out_channels,), dtype=x.dtype, device=x.device
+        agg_features, _ = scatter_max(
+            src=x.features,
+            index=x.agg_indices,
+            dim=0,
         )
-        out[mask] = x
 
-        pool = out.clone()
-        pool[~mask] = -float("inf")
-        pool, _ = torch.max(pool, dim=2, keepdim=True)
-        pool = pool.expand_as(out)
+        x.features = torch.cat([
+            x.features, agg_features[x.agg_indices]
+        ], dim=-1)
 
-        return torch.cat([out, pool], dim=-1)
+        return x, agg_features
 
 
 class SubGraph(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        num_layers: int = 3,
+    ):
         super().__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
 
-        self.mlp1 = MLP(in_channels, out_channels)
-        self.mlp2 = MLP(2 * out_channels, out_channels)
-        self.mlp3 = MLP(2 * out_channels, out_channels)
+        self.layers = nn.ModuleList([
+            SubGraphLayer(in_channels if i == 0 else 2 * out_channels, out_channels)
+            for i in range(num_layers)
+        ])
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        mask: torch.Tensor,
-    ):
-        x = self.mlp1(x, mask)
-        x = self.mlp2(x, mask)
-        x = self.mlp3(x, mask)
-
-        x = x[:, :, 0, -self.out_channels:]
-        x[~torch.any(mask, dim=2), :] = 0
-
-        return x
-
-
-# class SubGraphLayer(nn.Module):
-#     def __init__(
-#         self,
-#         in_channels: int,
-#         out_channels: int,
-#     ):
-#         super().__init__()
-
-#         self.in_channels = in_channels
-#         self.out_channels = out_channels
-
-#         self.fc = nn.Linear(in_channels, out_channels)
-#         self.norm = nn.LayerNorm(out_channels)
-
-#     def forward(self, x: Polylines):
-#         x.features = self.fc(x.features)
-#         x.features = F.leaky_relu(x.features)
-
-#         agg_features, _ = scatter_max(
-#             src=x.features,
-#             index=x.agg_indices,
-#             dim=0,
-#         )
-
-#         x.features = torch.cat([
-#             x.features, agg_features[x.agg_indices]
-#         ], dim=-1)
-
-#         return x, agg_features
-
-
-# class SubGraph(nn.Module):
-#     def __init__(
-#         self,
-#         in_channels: int,
-#         out_channels: int,
-#         num_layers: int = 3,
-#     ):
-#         super().__init__()
-
-#         self.in_channels = in_channels
-#         self.out_channels = out_channels
-
-#         self.layers = nn.ModuleList([
-#             SubGraphLayer(in_channels if i == 0 else 2 * out_channels, out_channels)
-#             for i in range(num_layers)
-#         ])
-
-#     def forward(self, x: Polylines) -> torch.Tensor:
-#         for layer in self.layers:
-#             x, agg_features = layer(x)
-#         return agg_features
+    def forward(self, x: Polylines) -> torch.Tensor:
+        for layer in self.layers:
+            x, agg_features = layer(x)
+        return agg_features
 
 
 class GlobalGraph(nn.Module):
@@ -151,32 +91,6 @@ class GlobalGraph(nn.Module):
         return x
 
 
-# class GNN(nn.Module):
-#     def __init__(
-#         self,
-#         num_channels: int,
-#         num_heads: int,
-#     ):
-#         super().__init__()
-
-#         self.attn = nn.MultiheadAttention(
-#             embed_dim=num_channels, num_heads=num_heads
-#         )
-
-#     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-#         query = x / (torch.sum(x ** 2, dim=-1, keepdim=True) ** 0.5 + 1e-6)
-#         query = query.transpose(0, 1)
-#         key = query
-#         value = x.transpose(0, 1)
-
-#         x, _ = self.attn(
-#             query=query, key=key, value=value, key_padding_mask=~mask
-#         )
-#         x = x.transpose(0, 1)
-
-#         return x
-
-
 class Decoder(nn.Module):
     def __init__(
         self,
@@ -204,12 +118,9 @@ class Decoder(nn.Module):
         pred_trajs = self.reg_head(x)
         pred_trajs = pred_trajs.view(-1, self.num_modes, self.timesteps, 2)
 
-        prob = self.cls_head(x)
-        prob = prob.sum(0)
-        prob = prob - prob.max()
-        prob = F.softmax(prob, dim=0)
+        logits = self.cls_head(x)
 
-        return pred_trajs, prob
+        return pred_trajs, logits
 
 
 class VectorNet(pl.LightningModule):
@@ -233,17 +144,11 @@ class VectorNet(pl.LightningModule):
         self.learning_rate = learning_rate
         self.max_epochs = max_epochs
 
-        # self.agent_subgraph = SubGraph(
-        #     agent_in_channels, num_channels, num_layers=num_subgraph_layers
-        # )
-        # self.roadmap_subgraph = SubGraph(
-        #     roadmap_in_channels, num_channels, num_layers=num_subgraph_layers
-        # )
         self.agent_subgraph = SubGraph(
-            agent_in_channels, num_channels
+            agent_in_channels, num_channels, num_layers=num_subgraph_layers
         )
         self.roadmap_subgraph = SubGraph(
-            roadmap_in_channels, num_channels
+            roadmap_in_channels, num_channels, num_layers=num_subgraph_layers
         )
         self.global_graph = GlobalGraph(
             num_channels,
@@ -251,8 +156,32 @@ class VectorNet(pl.LightningModule):
             num_layers=num_global_graph_layers,
             dropout=global_graph_dropout,
         )
-        # self.global_graph = GNN(num_channels, num_heads=1)
-        self.decoder = Decoder([2 * num_channels + 5, 1024, 2048], num_modes=3, timesteps=80)
+        self.decoder = Decoder([2 * num_channels + 6, 1024, 2048], num_modes=3, timesteps=80)
+
+    def forward(
+        self,
+        agents_polylines: Polylines,
+        roadgraph_polylines: Polylines,
+        edge_indices: torch.Tensor,
+        target_node_indices: torch.Tensor,
+        target_current_states: torch.Tensor,
+    ):
+        agent_polyline_features = self.agent_subgraph(agents_polylines)
+        roadgraph_polyline_features = self.roadmap_subgraph(roadgraph_polylines)
+
+        graph_in_features = torch.cat([
+            agent_polyline_features, roadgraph_polyline_features
+        ], dim=0)
+        graph_out_features = self.global_graph(graph_in_features, edge_indices)
+        graph_features = torch.cat([graph_out_features, graph_in_features], dim=-1)
+
+        target_agent_features = torch.cat([
+            graph_features[target_node_indices],
+            target_current_states[..., :6],
+        ], dim=-1)
+        pred_trajs, logits = self.decoder(target_agent_features)
+
+        return pred_trajs, logits
 
     def loss_fn(self, trajs, probs, targets):
         num_timesteps = trajs.shape[2]
@@ -270,139 +199,38 @@ class VectorNet(pl.LightningModule):
 
         return min_ade, min_ade_ce
 
-    def forward(
-        self,
-        agents_polylines: torch.Tensor,
-        agents_polylines_mask: torch.Tensor,
-        roadgraph_polylines: torch.Tensor,
-        roadgraph_polylines_mask: torch.Tensor,
-        objects_of_interest: torch.Tensor,
-        agents_motion: torch.Tensor,
-    ):
-        batch_size = agents_polylines.shape[0]
-
-        # agents_polylines: batch_size, num_agents, timestamps, channels
-        # roadgraph_polylines: batch_size, num_roads, road_length, channels
-        # print("agents_polylines", agents_polylines.shape)
-        # print("agents_polylines_mask", agents_polylines_mask.shape)
-        # print("roadgraph_polylines", roadgraph_polylines.shape)
-        # print("roadgraph_polylines_mask", roadgraph_polylines_mask.shape)
-        # print("objects_of_interest", objects_of_interest.shape)
-        # print("agents_motion", agents_motion.shape)
-
-        agent_polyline_features = self.agent_subgraph(
-            agents_polylines[:, :, :, :self.agent_in_channels],
-            agents_polylines_mask,
-        )
-
-        # print("agent_polyline_features", agent_polyline_features.shape)
-
-        roadgraph_polyline_features = self.roadmap_subgraph(
-            roadgraph_polylines[:, :, :, :self.roadmap_in_channels],
-            roadgraph_polylines_mask,
-        )
-
-        agent_feature_mask = agents_polylines_mask.any(2)
-        roadgraph_feature_mask = roadgraph_polylines_mask.any(2)
-
-        graph_in_features = torch.cat([
-            agent_polyline_features, roadgraph_polyline_features
-        ], dim=1)
-        graph_mask = torch.cat([agent_feature_mask, roadgraph_feature_mask], dim=1)
-
-        # print("graph_in_features", graph_in_features.shape)
-        # print("graph_mask", graph_mask.shape)
-
-        graph_out_features = graph_in_features.detach().clone()
-
-        # graph_out_features = self.global_graph(graph_in_features, graph_mask)
-        tmp_in = graph_in_features[graph_mask]
-
-        offset = 0
-        edge_indices_list = []
-        for i in range(batch_size):
-            num_nodes = graph_mask[i].sum().item()
-            range_indices = torch.arange(num_nodes, dtype=torch.int64, device=graph_in_features.device)
-            u, v = torch.meshgrid(range_indices, range_indices, indexing="ij")
-            edge_indices = torch.stack([u, v], dim=0)
-            edge_indices = edge_indices.flatten(1) + offset
-            # print("edge_indices", edge_indices.shape)
-            edge_indices_list.append(edge_indices)
-            offset += num_nodes
-
-        edge_indices = torch.cat(edge_indices_list, dim=-1)
-        # print("edge_indices_list", edge_indices.shape)
-
-        tmp_out = self.global_graph(tmp_in, edge_indices)
-
-        graph_out_features[graph_mask] = tmp_out
-
-        graph_features = torch.cat([graph_out_features, graph_in_features], dim=2)
-
-        trajs_list, probs_list, agent_inds_list = [], [], []
-        for i in range(batch_size):
-            agent_inds = torch.nonzero((objects_of_interest == 1)[i], as_tuple=True)[0]
-
-            target_features = torch.cat([
-                graph_features[i, agent_inds, :],
-                agents_polylines[i, agent_inds, 0, :2],
-                agents_motion[i, agent_inds, :],
-            ], dim=1)
-
-            decoded_trajs, decoded_probs = self.decoder(target_features)
-            trajs_list.append(decoded_trajs)
-            probs_list.append(decoded_probs)
-            agent_inds_list.append(agent_inds)
-
-        return trajs_list, probs_list, agent_inds_list
-
     def _training_and_validation_step(
         self,
         batch: Tuple[Polylines, Polylines, Polylines],
         batch_idx: int,
     ):
         (
-            agents_polylines, agents_polylines_mask,
-            roadgraph_polylines, roadgraph_polylines_mask,
-            targets, targets_mask,
-            tracks_to_predict, objects_of_interest,
-            agents_motion,
+            agents_polylines, roadgraph_polylines,
+            target_current_states, target_future_states, target_future_mask,
+            target_indices, target_node_indices, edge_indices,
         ) = batch
 
-        trajs_list, probs_list, agent_inds_list = self.forward(
-            # agents_polylines=agents_polylines,
-            # roadgraph_polylines=roadgraph_polylines,
-            # edge_indices=edge_indices,
-            # target_node_indices=target_node_indices,
+        pred_trajs, logits = self.forward(
             agents_polylines=agents_polylines,
-            agents_polylines_mask=agents_polylines_mask,
             roadgraph_polylines=roadgraph_polylines,
-            roadgraph_polylines_mask=roadgraph_polylines_mask,
-            objects_of_interest=objects_of_interest,
-            agents_motion=agents_motion,
+            edge_indices=edge_indices,
+            target_node_indices=target_node_indices,
+            target_current_states=target_current_states,
         )
 
-        loss_ade, loss_ade_ce = 0, 0
-        num_tracks_to_predict = 0
-        for i, (trajs, probs, agent_inds) in enumerate(
-            zip(trajs_list, probs_list, agent_inds_list)
-        ):
-            num_tracks_to_predict += agent_inds.shape[0]
+        gt_trajs = target_future_states[..., :2]
 
-            targets_i = targets[i, agent_inds, :, :2]
-            loss_ade_i, loss_ade_ce_i = self.loss_fn(trajs, probs, targets_i)
-            loss_ade += loss_ade_i
-            loss_ade_ce += loss_ade_ce_i
-
-        loss_ade = loss_ade / num_tracks_to_predict
-        loss_ade_ce = loss_ade_ce / num_tracks_to_predict
+        sq_diff = (pred_trajs - gt_trajs[:, None, :, :]) ** 2.
+        loss_ade, loss_ade_ce = compute_ade_losses(
+            sq_diff, logits, target_future_mask
+        )
 
         loss = loss_ade + loss_ade_ce
 
         return loss, loss_ade, loss_ade_ce
 
     def training_step(self, batch, batch_idx: int):
-        batch_size = batch[0].shape[0]
+        batch_size = batch[0].batch_size
         loss, loss_ade, loss_ade_ce = self._training_and_validation_step(batch, batch)
 
         self.log(
@@ -421,7 +249,7 @@ class VectorNet(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx: int):
-        batch_size = batch[0].shape[0]
+        batch_size = batch[0].batch_size
         loss, loss_ade, loss_ade_ce = self._training_and_validation_step(batch, batch)
 
         self.log(
@@ -440,13 +268,21 @@ class VectorNet(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        return torch.optim.Adam(
+        optimizer = torch.optim.Adam(
             filter(lambda p: p.requires_grad, self.parameters()),
             lr=self.learning_rate,
         )
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=self.max_epochs
+        )
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": lr_scheduler,
+        }
 
 
-# @torch.jit.script
+@torch.jit.script
 def compute_ade_losses(
     sq_diff: torch.Tensor,
     logits: torch.Tensor,
@@ -458,11 +294,9 @@ def compute_ade_losses(
 
     # N, M, T
     l2 = torch.sqrt(sq_diff.sum(-1))
-    gt_mask = gt_mask[:, None, :].expand_as(l2).contiguous()
+    gt_mask = gt_mask[:, None, :].expand_as(l2)
     # N, M
     ade = (l2 * gt_mask).sum(-1) / (gt_mask.sum(-1) + 1e-4)
-    # ade = l2[gt_mask].mean(-1)
-    # print("ade", ade.shape, ade.mean())
     # N
     min_ade, min_indices = ade.min(-1)
     # N
