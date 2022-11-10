@@ -1,6 +1,7 @@
 /data/*
 /wandb
 /dl_playground/version.py
+/results
 
 .DS_Store
 
