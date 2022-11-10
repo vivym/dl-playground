@@ -2,7 +2,7 @@ data:
   class_path: dl_playground.data.datasets.MicroseismicEventDataset
   init_args:
     root_path: data/microseismic_event
-    in_channel_names: ["waveform", "waveform_frequency_spectrum", "specgram"]
+    in_channel_names: ["waveform", "frequency_spectrum", "specgram"]
     train_batch_size: 48
     val_batch_size: 48
     num_workers: 8
