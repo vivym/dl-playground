@@ -156,7 +156,7 @@ class VectorNet(pl.LightningModule):
             num_layers=num_global_graph_layers,
             dropout=global_graph_dropout,
         )
-        self.decoder = Decoder([2 * num_channels + 6, 1024, 2048], num_modes=3, timesteps=80)
+        self.decoder = Decoder([2 * num_channels + 6, 4096, 512], num_modes=3, timesteps=80)
 
     def forward(
         self,
@@ -183,13 +183,15 @@ class VectorNet(pl.LightningModule):
 
         return pred_trajs, logits
 
-    def loss_fn(self, trajs, probs, targets):
+    def loss_fn(self, trajs, probs, targets, gt_masks):
         num_timesteps = trajs.shape[2]
 
         targets = targets[:, None, :, :]
         sq_dif = torch.square(trajs - targets)
         l2_per_timestep = torch.sqrt(torch.sum(sq_dif, dim=3))
-        ade_per_actor_per_mode = torch.sum(l2_per_timestep, dim=2) / num_timesteps
+        gt_masks = gt_masks[:, None, :].expand_as(l2_per_timestep)
+        l2_per_timestep = l2_per_timestep * gt_masks
+        ade_per_actor_per_mode = torch.sum(l2_per_timestep, dim=2) / (gt_masks.sum(-1) + 1e-8)
         ade_per_mode = torch.sum(ade_per_actor_per_mode, 0)
 
         best_mode = torch.argmin(ade_per_mode, dim=0)
@@ -288,20 +290,20 @@ def compute_ade_losses(
     logits: torch.Tensor,
     gt_mask: torch.Tensor,
 ):
-    # sq_diff: N, M, T, 2
-    # logits: N, M
-    # gt_mask: N, T
+    # sq_diff: B, M, T, 2
+    # logits: B, M
+    # gt_mask: B, T
 
-    # N, M, T
+    # B, M, T
     l2 = torch.sqrt(sq_diff.sum(-1))
     gt_mask = gt_mask[:, None, :].expand_as(l2)
-    # N, M
+    # B, M
     ade = (l2 * gt_mask).sum(-1) / (gt_mask.sum(-1) + 1e-4)
-    # N
+    # B
     min_ade, min_indices = ade.min(-1)
-    # N
+    # B
     ade_ce = -F.log_softmax(logits, dim=-1)
-    min_ade_ce = ade_ce[min_indices]
+    min_ade_ce = ade_ce.gather(1, index=min_indices[:, None])
 
     loss_ade = min_ade.mean()
     loss_ade_ce = min_ade_ce.mean()
@@ -314,8 +316,8 @@ def compute_neg_multi_log_likelihood(
     sq_diff: torch.Tensor,
     logits: torch.Tensor,
 ):
-    # sq_diff: N, M, T, 2
-    # logits: N, M
+    # sq_diff: B, M, T, 2
+    # logits: B, M
 
     # N, M, T
     error = sq_diff.sum(-1)

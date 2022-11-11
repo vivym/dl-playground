@@ -19,10 +19,10 @@ model:
     num_global_graph_heads: 1
     global_graph_dropout: 0.1
     learning_rate: 0.001
-    max_epochs: 80
+    max_epochs: 4
 
 trainer:
-  max_epochs: 80
+  max_epochs: 4
   accelerator: "gpu"
   devices: 1
 
@@ -31,7 +31,7 @@ trainer:
       init_args:
         project: dl-playground
         entity: viv
-        name: waymo_motion_vectornet
+        name: waymo_motion_vectornet_4ep
         notes: "waymo_motion_vectornet"
         tags: ["VectorNet", "WaymoMotion"]
         save_code: True
