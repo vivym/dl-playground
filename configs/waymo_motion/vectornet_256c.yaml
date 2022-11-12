@@ -3,9 +3,9 @@ data:
   init_args:
     root_path: data/waymo_open_dataset_motion_v_1_1_0
     train_interval: 8
-    val_interval: 1
-    train_batch_size: 32
-    val_batch_size: 32
+    val_interval: 8
+    train_batch_size: 24
+    val_batch_size: 24
     num_workers: 16
 
 model:
@@ -13,7 +13,7 @@ model:
   init_args:
     agent_in_channels: 11
     roadmap_in_channels: 26
-    num_channels: 64
+    num_channels: 256
     num_subgraph_layers: 3
     num_global_graph_layers: 1
     num_global_graph_heads: 1
@@ -31,7 +31,7 @@ trainer:
       init_args:
         project: dl-playground
         entity: viv
-        name: waymo_motion_vectornet
+        name: waymo_motion_vectornet_256c
         notes: "waymo_motion_vectornet"
         tags: ["VectorNet", "WaymoMotion"]
         save_code: True

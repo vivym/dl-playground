@@ -3,13 +3,13 @@ data:
   init_args:
     root_path: data/waymo_open_dataset_motion_v_1_1_0
     train_interval: 8
-    val_interval: 1
+    val_interval: 8
     train_batch_size: 32
     val_batch_size: 32
     num_workers: 16
 
 model:
-  class_path: dl_playground.models.VectorNet
+  class_path: dl_playground.models.vectornet2.VectorNet
   init_args:
     agent_in_channels: 11
     roadmap_in_channels: 26
@@ -31,7 +31,7 @@ trainer:
       init_args:
         project: dl-playground
         entity: viv
-        name: waymo_motion_vectornet
+        name: waymo_motion_vectornet_cosine_restart
         notes: "waymo_motion_vectornet"
         tags: ["VectorNet", "WaymoMotion"]
         save_code: True
