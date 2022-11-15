@@ -109,7 +109,19 @@ def swin_t_conv1(*, weights: Any, progress: bool = True, **kwargs: Any) -> SwinT
         **kwargs,
     )
 
-    model.features[0].insert(1, CNNBlock(64, 64, 1))
+    """
+                nn.Conv2d(
+                    3, embed_dim, kernel_size=(patch_size[0], patch_size[1]), stride=(patch_size[0], patch_size[1])
+                ),
+    """
+
+    # model.features[0].insert(1, CNNBlock(64, 64, 1))
+    model.features[0][0] = nn.Sequential(
+        CNNBlock(3, 64, 1),
+        nn.Conv2d(
+            64, 64, kernel_size=(4, 4), stride=(4, 4)
+        ),
+    )
 
     return model
 
