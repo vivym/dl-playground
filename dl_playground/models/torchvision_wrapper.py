@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torchvision import models
-from torchmetrics import Accuracy
+from torchmetrics import Accuracy, ConfusionMatrix
 
 
 class TorchvisionWrapper(pl.LightningModule):
@@ -65,29 +65,31 @@ class TorchvisionWrapper(pl.LightningModule):
         if num_classes > 5:
             self.accuracy_5 = Accuracy(num_classes=num_classes, top_k=5)
 
+        self.confusion_matrix = ConfusionMatrix(num_classes=num_classes)
+
     def forward(self, x):
         return self.model(x)
 
     def _training_and_validation_step(self, batch, batch_idx: int):
         images, labels = batch
 
-        outputs = self.forward(images)
+        logits = self.forward(images)
 
         loss = F.cross_entropy(
-            outputs, labels,
+            logits, labels,
             label_smoothing=self.label_smoothing
         )
 
-        acc1 = self.accuracy_1(outputs, labels) * 100
+        acc1 = self.accuracy_1(logits, labels) * 100
         if self.num_classes > 5:
-            acc5 = self.accuracy_5(outputs, labels) * 100
+            acc5 = self.accuracy_5(logits, labels) * 100
         else:
             acc5 = None
 
-        return loss, acc1, acc5
+        return logits, loss, acc1, acc5
 
     def training_step(self, batch, batch_idx: int):
-        loss, acc1, acc5 = self._training_and_validation_step(batch, batch)
+        _, loss, acc1, acc5 = self._training_and_validation_step(batch, batch)
 
         self.log("train/loss", loss, on_step=True)
         self.log(
@@ -103,7 +105,8 @@ class TorchvisionWrapper(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx: int):
-        loss, acc1, acc5 = self._training_and_validation_step(batch, batch)
+        images, labels = batch
+        logits, loss, acc1, acc5 = self._training_and_validation_step(batch, batch)
 
         self.log("val/loss", loss, on_step=True)
         self.log(
@@ -115,6 +118,14 @@ class TorchvisionWrapper(pl.LightningModule):
                 "val/acc@5", acc5,
                 on_step=True, on_epoch=True, prog_bar=True,
             )
+
+        preds = logits.argmax(-1)
+        self.confusion_matrix.update(preds, labels)
+
+    def validation_epoch_end(self, outputs):
+        cfm = self.confusion_matrix.compute().cpu().numpy()
+        self.confusion_matrix.reset()
+        print("cfm", self.current_epoch, cfm)
 
     def test_step(self, batch, batch_idx: int):
         images, labels = batch
