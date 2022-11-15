@@ -38,48 +38,44 @@ def swin_m(*, weights: Any, progress: bool = True, **kwargs: Any) -> SwinTransfo
     )
 
 
-class CNNBlock(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        num_layers: int,
-    ):
+class CNN_part(nn.Module):
+    def __init__(self, in_channel=3, channel=32):
         super().__init__()
 
-        self.layers = nn.Sequential(*[
-            BasicBlock(in_channels if i == 0 else out_channels, out_channels)
-            for i in range(num_layers)
-        ])
+        self.conv1_1 = nn.Conv2d(in_channel, channel, 3, 1, padding=1, bias=False)
+        self.conv1_2 = nn.Conv2d(channel, 2*channel, 3, 1, padding=1, bias=False)
+        self.relu1 = nn.ReLU(inplace=True)
 
-        self.pooler = nn.AdaptiveAvgPool2d((1, None))
-        self.conv1 = nn.Conv2d(
-            out_channels, out_channels,
-            kernel_size=(1, 3), padding=(0, 1),
-        )
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(
-            out_channels, out_channels,
-            kernel_size=3, padding=1
-        )
-        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.conv2_1 = nn.Conv2d(2*channel, 2*channel, 3, 1, padding=1, bias=False)
+        self.conv2_2 = nn.Conv2d(2*channel, 2*channel, 3, 1, padding=1, bias=False)
+        self.relu2 = nn.ReLU(inplace=True)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.layers(x)
+        self.pool1 = nn.AdaptiveAvgPool2d((1, None))
+        self.conv3_1 = nn.Conv2d(2*channel, 2*channel, (1, 3), 1, padding=(0, 1), bias=False)
+        self.relu3 = nn.LeakyReLU()
 
-        shortcut = x
-        x = self.pooler(x)
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = shortcut * x
-        x = F.leaky_relu_(x)
+        self.conv4_1 = nn.Conv2d(2*channel, channel, 3, 1, padding=1, bias=False)
+        self.relu4 = nn.LeakyReLU()
+    def forward(self, x):
+        org = x
+        x = self.conv1_1(x)
+        x = self.conv1_2(x)
+        x = self.relu1(x)
+        res1 = x
+        x = self.conv2_1(x)
+        x = self.conv2_2(x)
+        x = self.relu2(x)
+        x = x + res1
 
-        shortcut = x
-        x = self.conv2(x)
-        x = self.bn2(x)
-        x += shortcut
-        x = F.leaky_relu_(x)
+        x_tmp = x
+        x = self.pool1(x)
+        x = self.conv3_1(x)
+        x = self.relu3(x)
+        x = x*x_tmp
 
+        x = self.conv4_1(x)
+        x = self.relu4(x)
+        x = torch.cat((x, org), dim=1)
         return x
 
 
@@ -117,7 +113,7 @@ def swin_t_conv1(*, weights: Any, progress: bool = True, **kwargs: Any) -> SwinT
 
     # model.features[0].insert(1, CNNBlock(64, 64, 1))
     model.features[0][0] = nn.Sequential(
-        CNNBlock(3, 64, 1),
+        CNN_part(3, 32),
         nn.Conv2d(
             64, 64, kernel_size=(4, 4), stride=(4, 4)
         ),
