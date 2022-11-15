@@ -56,6 +56,7 @@ def collate_fn(samples):
         agents_polylines, roadgraph_polylines,
         target_current_states, target_future_states,
         target_future_mask, target_indices, edge_indices,
+        agents_timestamp,
     ) = map(list, zip(*samples))
 
     agents_polylines, num_agents = Polylines.collate(agents_polylines)
@@ -86,10 +87,13 @@ def collate_fn(samples):
         offset += num_nodes_i
     edge_indices = torch.cat(edge_indices_list, dim=-1)
 
+    agents_timestamp = torch.cat(agents_timestamp, dim=0)
+
     return (
         agents_polylines, roadgraph_polylines,
         target_current_states, target_future_states, target_future_mask,
         target_indices, target_node_indices, edge_indices,
+        agents_timestamp,
     )
 
 
@@ -173,6 +177,7 @@ class WaymoMotionDataset(Dataset):
 
         # A, T, C
         agents_states = agents_states[valid_agents_mask]
+        agents_timestamp = np.tile(np.arange(-10, 1)[None, :], (num_valid_agents, 1))
 
         # copy!
         target_current_states = agents_states[target_index, -1, :].copy()
@@ -187,6 +192,7 @@ class WaymoMotionDataset(Dataset):
 
         # N, C
         agents_states = agents_states[agents_states_mask]
+        agents_timestamp = agents_timestamp[agents_states_mask]
 
         # T, C
         target_future_states = np.concatenate([
@@ -208,6 +214,7 @@ class WaymoMotionDataset(Dataset):
         target_future_states[:, :2] = transform(target_future_states[:, :2])
 
         agents_states = torch.from_numpy(agents_states)
+        agents_timestamp = torch.from_numpy(agents_timestamp)
         agents_states_mask = torch.from_numpy(agents_states_mask)
         target_current_states = torch.from_numpy(target_current_states)
         target_future_states = torch.from_numpy(target_future_states)
@@ -255,6 +262,7 @@ class WaymoMotionDataset(Dataset):
             agents_polylines, roadgraph_polylines,
             target_current_states, target_future_states,
             target_future_mask, target_index, edge_indices,
+            agents_timestamp,
         )
 
     def __getitem__(self, index: int):
@@ -292,8 +300,8 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
         self.test_batch_size = test_batch_size
         self.num_workers = num_workers
 
-        self.train_path = self.root_path / "preprocessed" / "training"
-        self.val_path = self.root_path / "preprocessed" / "validation"
+        self.train_path = self.root_path / "preprocessed_npz" / "training"
+        self.val_path = self.root_path / "preprocessed_npz" / "validation"
 
     def train_dataloader(self):
         dataset = WaymoMotionDataset(

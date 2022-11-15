@@ -183,24 +183,6 @@ class VectorNet(pl.LightningModule):
 
         return pred_trajs, logits
 
-    def loss_fn(self, trajs, probs, targets, gt_masks):
-        num_timesteps = trajs.shape[2]
-
-        targets = targets[:, None, :, :]
-        sq_dif = torch.square(trajs - targets)
-        l2_per_timestep = torch.sqrt(torch.sum(sq_dif, dim=3))
-        gt_masks = gt_masks[:, None, :].expand_as(l2_per_timestep)
-        l2_per_timestep = l2_per_timestep * gt_masks
-        ade_per_actor_per_mode = torch.sum(l2_per_timestep, dim=2) / (gt_masks.sum(-1) + 1e-8)
-        ade_per_mode = torch.sum(ade_per_actor_per_mode, 0)
-
-        best_mode = torch.argmin(ade_per_mode, dim=0)
-        min_ade = torch.index_select(ade_per_mode, dim=0, index=best_mode)
-        min_ade_prob = torch.index_select(probs, dim=0, index=best_mode)
-        min_ade_ce = -torch.log(min_ade_prob + 1e-5)
-
-        return min_ade, min_ade_ce
-
     def _training_and_validation_step(
         self,
         batch: Tuple[Polylines, Polylines, Polylines],
@@ -210,6 +192,7 @@ class VectorNet(pl.LightningModule):
             agents_polylines, roadgraph_polylines,
             target_current_states, target_future_states, target_future_mask,
             target_indices, target_node_indices, edge_indices,
+            agents_timestamp,
         ) = batch
 
         pred_trajs, logits = self.forward(

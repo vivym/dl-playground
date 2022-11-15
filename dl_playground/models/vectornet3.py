@@ -147,9 +147,9 @@ class VectorNet(pl.LightningModule):
         self.learning_rate = learning_rate
         self.max_epochs = max_epochs
 
-        self.agent_temporal_encoding = PositionalEncoding1D(32)
-        # self.target_motion_xy_encoding = PositionalEncoding2D(32)
-        # self.target_motion_yaw_encoding = PositionalEncoding1D(8)
+        # self.agent_temporal_encoding = PositionalEncoding1D(32)
+        self.target_motion_xy_encoding = PositionalEncoding2D(32)
+        self.target_motion_yaw_encoding = PositionalEncoding1D(8)
 
         self.agent_subgraph = SubGraph(
             agent_in_channels, num_channels, num_layers=num_subgraph_layers
@@ -163,7 +163,7 @@ class VectorNet(pl.LightningModule):
             num_layers=num_global_graph_layers,
             dropout=global_graph_dropout,
         )
-        self.decoder = Decoder([2 * num_channels + 6, 4096, 512], num_modes=3, timesteps=80)
+        self.decoder = Decoder([2 * num_channels + 3 + 32 + 8, 4096, 512], num_modes=3, timesteps=80)
 
     def forward(
         self,
@@ -174,11 +174,11 @@ class VectorNet(pl.LightningModule):
         target_current_states: torch.Tensor,
         agents_timestamp: torch.Tensor,
     ):
-        agents_te = self.agent_temporal_encoding(agents_timestamp)
+        # agents_te = self.agent_temporal_encoding(agents_timestamp)
 
-        agents_polylines.features = torch.cat([
-            agents_polylines.features, agents_te
-        ], dim=-1)
+        # agents_polylines.features = torch.cat([
+        #     agents_polylines.features, agents_te
+        # ], dim=-1)
 
         agent_polyline_features = self.agent_subgraph(agents_polylines)
         roadgraph_polyline_features = self.roadmap_subgraph(roadgraph_polylines)
@@ -189,20 +189,20 @@ class VectorNet(pl.LightningModule):
         graph_out_features = self.global_graph(graph_in_features, edge_indices)
         graph_features = torch.cat([graph_out_features, graph_in_features], dim=-1)
 
-        # target_current_motion_yaw = target_current_states[..., 5]
+        target_current_motion_yaw = target_current_states[..., 5]
 
-        # target_current_motion_xy = self.target_motion_xy_encoding(
-        #     target_current_states[..., 3:5]
-        # )
-        # target_current_motion_yaw = self.target_motion_yaw_encoding(
-        #     target_current_states[..., 5]
-        # )
+        target_current_motion_xy = self.target_motion_xy_encoding(
+            target_current_states[..., 3:5]
+        )
+        target_current_motion_yaw = self.target_motion_yaw_encoding(
+            target_current_states[..., 5]
+        )
 
         target_agent_features = torch.cat([
             graph_features[target_node_indices],
-            target_current_states[..., :6],
-            # target_current_motion_xy,
-            # target_current_motion_yaw,
+            target_current_states[..., :3],
+            target_current_motion_xy,
+            target_current_motion_yaw,
         ], dim=-1)
         pred_trajs, logits = self.decoder(target_agent_features)
 

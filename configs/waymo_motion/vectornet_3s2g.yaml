@@ -15,7 +15,7 @@ model:
     roadmap_in_channels: 26
     num_channels: 64
     num_subgraph_layers: 3
-    num_global_graph_layers: 1
+    num_global_graph_layers: 2
     num_global_graph_heads: 1
     global_graph_dropout: 0.1
     learning_rate: 0.001
@@ -31,7 +31,7 @@ trainer:
       init_args:
         project: dl-playground
         entity: viv
-        name: waymo_motion_vectornet
+        name: waymo_motion_vectornet_3s2g
         notes: "waymo_motion_vectornet"
         tags: ["VectorNet", "WaymoMotion"]
         save_code: True
