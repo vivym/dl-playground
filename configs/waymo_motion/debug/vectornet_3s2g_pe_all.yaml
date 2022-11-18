@@ -1,7 +1,7 @@
 data:
-  class_path: dl_playground.data.datasets.WaymoMotionDataLoader
+  class_path: dl_playground.data.datasets.waymo_motion_legacy.WaymoMotionDataLoader
   init_args:
-    root_path: data/waymo_open_dataset_motion_v_1_1_0/preprocessed
+    root_path: data/waymo_open_dataset_motion_v_1_1_0
     train_interval: 1
     val_interval: 8
     train_batch_size: 32
@@ -31,7 +31,7 @@ trainer:
       init_args:
         project: dl-playground
         entity: viv
-        name: waymo_motion_vectornet_3s_2g_pe_all
+        name: waymo_motion_vectornet_3s_2g_pe_all_legacy
         notes: "waymo_motion_vectornet"
         tags: ["VectorNet", "WaymoMotion"]
         save_code: True

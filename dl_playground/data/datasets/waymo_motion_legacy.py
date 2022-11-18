@@ -1,4 +1,3 @@
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List
@@ -102,85 +101,114 @@ class WaymoMotionDataset(Dataset):
     def __init__(
         self,
         root_path: Path,
-        split: str,
         load_interval: int = 1,
+        is_training: bool = False
     ):
         super().__init__()
 
         self.root_path = root_path
-        self.split = split
         self.load_interval = load_interval
+        self.is_training = is_training
 
-        with open(root_path / f"{split}.json") as f:
-            samples = json.load(f)
-
-        if split in ["training", "validation"]:
-            samples = [
-                (scenario_id, target_ids)
-                for scenario_id, target_ids in samples.items()
-            ]
-            self.samples = samples[::load_interval]
-        elif split in ["testing"]:
-            assert load_interval == 1, load_interval
-            self.samples = [
-                (scenario_id, [target_id])
-                for scenario_id, target_ids in samples.items()
-                for target_id in target_ids
-            ]
-        else:
-            raise ValueError(split)
+        self.paths = list(root_path.glob("*.npz"))
+        self.paths = self.paths[::load_interval]
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.paths)
 
     def load_data(self, index: int):
-        scenario_id, target_ids = self.samples[index]
-        file_path = self.root_path / self.split / f"{scenario_id}.npz"
+        file_path = self.paths[index]
 
         data = np.load(file_path)
 
-        agents_type = data["agents_type"]
-        agents_states = data["agents_states"]
-        agents_timestamp = data["agents_timestamp"]
-        agents_states_mask = data["agents_states_mask"]
-        agents_current_states = data["agents_current_states"]
-        agents_future_states = data["agents_future_states"]
-        agents_future_mask = data["agents_future_mask"]
-        agents_agg_indices = data["agents_agg_indices"]
-        roadgraph_type = data["roadgraph_type"]
-        roadgraph_states = data["roadgraph_states"]
-        compacted_roadgraph_id = data["compacted_roadgraph_id"]
-        edge_indices = data["edge_indices"]
+        agents_current_mask = data["state/current/valid"]
+        agents_states_mask = np.concatenate([
+            data["state/past/valid"], data["state/current/valid"]
+        ], axis=-1).astype(bool)
+        agents_future_mask = data["state/future/valid"].astype(bool)
 
-        # add agent type embedding
-        agents_type = agents_type[agents_agg_indices]
-        agents_type_one_hot = np.eye(5, dtype=np.float32)[agents_type]
-        agents_states = np.concatenate(
-            [agents_states, agents_type_one_hot], axis=-1
-        )
+        valid_agents_mask = agents_states_mask[:, -1]
+        invalid_agents_mask = ~valid_agents_mask
+        num_valid_agents = valid_agents_mask.sum()
 
-        # add roadgraph type embedding
-        roadgraph_type_one_hot = np.eye(20, dtype=np.float32)[roadgraph_type]
-        roadgraph_states = np.concatenate(
-            [roadgraph_states, roadgraph_type_one_hot], axis=-1
-        )
+        tracks_to_predict = data["state/tracks_to_predict"].astype(bool)
+        tracks_to_predict[invalid_agents_mask] = False
+        tracks_to_predict[~agents_future_mask.any(-1)] = False
 
-        if self.split == "training":
-            target_index = np.random.choice(target_ids, size=1)[0]
+        agents_current_mask = agents_current_mask[valid_agents_mask]
+        agents_states_mask = agents_states_mask[valid_agents_mask]
+        agents_future_mask = agents_future_mask[valid_agents_mask]
+        tracks_to_predict = tracks_to_predict[valid_agents_mask]
+
+        if np.sum(tracks_to_predict) == 0:
+            return None
+
+        if self.is_training:
+            predictable_mask = agents_future_mask.any(-1) & agents_current_mask.any(-1)
+            # predictable_mask = tracks_to_predict
+            target_index = np.random.choice(
+                np.argwhere(predictable_mask).reshape(-1), size=1, replace=False
+            )[0]
         else:
-            target_index = target_ids[0]
+            target_index = np.argwhere(tracks_to_predict).reshape(-1)[0]
 
-        target_current_states = agents_current_states[target_index].copy()
-        target_current_xy = target_current_states[:2].copy()
-        target_current_yaw = target_current_states[2].copy()
+        num_past_steps = data["state/past/x"].shape[1]
+        num_current_steps = data["state/current/x"].shape[1]
+        num_future_steps = data["state/future/x"].shape[1]
 
-        target_future_states = agents_future_states[target_index]
-        target_future_mask = agents_future_mask[target_index]
+        agents_type_one_hot = np.eye(5)[data["state/type"].astype(np.int64).flatten()].astype(np.float32)
+        agents_past_states = np.concatenate([
+            data["state/past/x"][:, :, None],
+            data["state/past/y"][:, :, None],
+            data["state/past/bbox_yaw"][:, :, None],
+            data["state/past/velocity_x"][:, :, None],
+            data["state/past/velocity_y"][:, :, None],
+            data["state/past/vel_yaw"][:, :, None],
+            np.tile(agents_type_one_hot[:, None, :], (1, num_past_steps, 1)),
+        ], axis=-1)
+
+        agents_current_states = np.concatenate([
+            data["state/current/x"][:, :, None],
+            data["state/current/y"][:, :, None],
+            data["state/current/bbox_yaw"][:, :, None],
+            data["state/current/velocity_x"][:, :, None],
+            data["state/current/velocity_y"][:, :, None],
+            data["state/current/vel_yaw"][:, :, None],
+            np.tile(agents_type_one_hot[:, None, :], (1, num_current_steps, 1)),
+        ], axis=-1)
+
+        agents_states = np.concatenate([agents_past_states, agents_current_states], axis=1)
+
+        # A, T, C
+        agents_states = agents_states[valid_agents_mask]
+        agents_timestamp = np.tile(np.arange(-10, 1)[None, :], (num_valid_agents, 1))
+
+        # copy!
+        target_current_states = agents_states[target_index, -1, :].copy()
+
+        target_current_xy = agents_states[target_index, -1, :2]
+        target_current_yaw = agents_states[target_index, -1, 2]
 
         rot_matrix = np.asarray([
             [np.cos(target_current_yaw), -np.sin(target_current_yaw)],
             [np.sin(target_current_yaw), np.cos(target_current_yaw)],
         ])
+
+        # N, C
+        agents_states = agents_states[agents_states_mask]
+        agents_timestamp = agents_timestamp[agents_states_mask]
+
+        # T, C
+        target_future_states = np.concatenate([
+            data["state/future/x"][valid_agents_mask, :, None],
+            data["state/future/y"][valid_agents_mask, :, None],
+            data["state/future/bbox_yaw"][valid_agents_mask, :, None],
+            data["state/future/velocity_x"][valid_agents_mask, :, None],
+            data["state/future/velocity_y"][valid_agents_mask, :, None],
+            data["state/future/vel_yaw"][valid_agents_mask, :, None],
+            np.tile(agents_type_one_hot[valid_agents_mask, None, :], (num_future_steps, 1)),
+        ], axis=-1)
+        target_future_states = target_future_states[target_index]
 
         def transform(xy):
             return (xy - target_current_xy[None, :]) @ rot_matrix
@@ -192,27 +220,47 @@ class WaymoMotionDataset(Dataset):
         agents_states = torch.from_numpy(agents_states)
         agents_timestamp = torch.from_numpy(agents_timestamp)
         agents_states_mask = torch.from_numpy(agents_states_mask)
-        agents_agg_indices = torch.from_numpy(agents_agg_indices)
         target_current_states = torch.from_numpy(target_current_states)
         target_future_states = torch.from_numpy(target_future_states)
-        target_future_mask = torch.from_numpy(target_future_mask)
+        target_future_mask = torch.from_numpy(agents_future_mask[target_index])
 
         agents_polylines = Polylines(
-            features=agents_states,         # N, C
-            agg_indices=agents_agg_indices, # N, (A, L, C) -> (A, C)
+            features=agents_states,                                     # N, C
+            agg_indices=agents_states_mask.nonzero(as_tuple=True)[0],   # N, (A, L, C) -> (A, C)
         )
 
-        roadgraph_states[:, :2] = transform(roadgraph_states[:, :2])
+        roadgraph_type = data["roadgraph_samples/type"].astype(np.int64).flatten()
+        roadgraph_type_one_hot = np.eye(20)[roadgraph_type].astype(np.float32)
 
-        compacted_roadgraph_id = torch.from_numpy(compacted_roadgraph_id)
+        roadgraph_states = np.concatenate([
+            data["roadgraph_samples/xyz"],
+            data["roadgraph_samples/dir"],
+            roadgraph_type_one_hot,
+        ], axis=-1)
+        roadgraph_states_mask = data["roadgraph_samples/valid"].astype(bool).reshape(-1)
+
+        roadgraph_states = roadgraph_states[roadgraph_states_mask]
+        roadgraph_states[:, :2] = (roadgraph_states[:, :2] - target_current_xy[None, :]) @ rot_matrix
+
+        roadgraph_id = data["roadgraph_samples/id"].reshape(-1)
+        roadgraph_id = roadgraph_id[roadgraph_states_mask]
+        unique_roadgraph_id, roadgraph_id = np.unique(roadgraph_id, return_inverse=True)
+        num_valid_roads = unique_roadgraph_id.shape[0]
+
         roadgraph_states = torch.from_numpy(roadgraph_states)
+        roadgraph_id = torch.from_numpy(roadgraph_id)
 
         roadgraph_polylines = Polylines(
-            features=roadgraph_states,          # N, C
-            agg_indices=compacted_roadgraph_id, # N, (R, L, C) -> (R, C)
+            features=roadgraph_states,  # N, C
+            agg_indices=roadgraph_id,   # N, (R, L, C) -> (R, C)
         )
 
-        edge_indices = torch.from_numpy(edge_indices)
+        # num_valid_agents + num_valid_roads
+        num_nodes = num_valid_agents + num_valid_roads
+        range_indices = torch.arange(num_nodes, dtype=torch.int64)
+        u, v = torch.meshgrid(range_indices, range_indices, indexing="ij")
+        edge_indices = torch.stack([u, v], dim=0)
+        edge_indices = edge_indices.flatten(1)
 
         return (
             agents_polylines, roadgraph_polylines,
@@ -256,11 +304,14 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
         self.test_batch_size = test_batch_size
         self.num_workers = num_workers
 
+        self.train_path = self.root_path / "preprocessed_npz" / "training"
+        self.val_path = self.root_path / "preprocessed_npz" / "validation"
+
     def train_dataloader(self):
         dataset = WaymoMotionDataset(
-            root_path=self.root_path,
-            split="training",
+            root_path=self.train_path,
             load_interval=self.train_interval,
+            is_training=True,
         )
 
         return DataLoader(
@@ -274,9 +325,9 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
 
     def val_dataloader(self):
         dataset = WaymoMotionDataset(
-            root_path=self.root_path,
-            split="validation",
+            root_path=self.val_path,
             load_interval=self.val_interval,
+            is_training=False,
         )
 
         return DataLoader(
@@ -288,47 +339,14 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
             collate_fn=collate_fn,
         )
 
-    def test_dataloader(self):
-        dataset = WaymoMotionDataset(
-            root_path=self.root_path,
-            split="testing",
-            load_interval=self.test_interval,
-        )
-
-        return DataLoader(
-            dataset,
-            batch_size=self.test_batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=True,
-            collate_fn=collate_fn,
-        )
-
 
 def test():
     dataset = WaymoMotionDataset(
-        Path("data/waymo_open_dataset_motion_v_1_1_0/preprocessed"),
-        split="training",
-        load_interval=1,
+        Path("data/waymo_open_dataset_motion_v_1_1_0/preprocessed/training"),
+        load_interval=10,
+        is_training=True,
     )
-    dataset[0]
-    print(len(dataset))
-
-    dataset = WaymoMotionDataset(
-        Path("data/waymo_open_dataset_motion_v_1_1_0/preprocessed"),
-        split="validation",
-        load_interval=1,
-    )
-    dataset[0]
-    print(len(dataset))
-
-    dataset = WaymoMotionDataset(
-        Path("data/waymo_open_dataset_motion_v_1_1_0/preprocessed"),
-        split="testing",
-        load_interval=1,
-    )
-    dataset[0]
-    print(len(dataset))
+    data = dataset[0]
 
 
 if __name__ == "__main__":

@@ -182,20 +182,24 @@ def to_numpy(
         np.savez_compressed(out_path / f"{scenario_id}.npz", **new_data)
 
 
-def preprocess_worker(file_path: Path, out_dir: Path):
+def preprocess_worker(file_path: Path, out_dir: Path, is_training: bool):
     data = np.load(file_path)
 
+    agents_past_mask = data["state/past/valid"]
+    agents_current_mask = data["state/current/valid"]
+
     agents_states_mask = np.concatenate([
-        data["state/past/valid"], data["state/current/valid"]
+        agents_past_mask, agents_current_mask
     ], axis=-1).astype(bool)
     agents_future_mask = data["state/future/valid"].astype(bool)
 
     valid_agents_mask = agents_states_mask.any(-1)
-    # invalid_agents_mask = ~valid_agents_mask
     num_valid_agents = valid_agents_mask.sum()
 
     tracks_to_predict = data["state/tracks_to_predict"].astype(bool)
 
+    agents_past_mask = agents_past_mask[valid_agents_mask]
+    agents_current_mask = agents_current_mask[valid_agents_mask]
     agents_states_mask = agents_states_mask[valid_agents_mask]
     agents_future_mask = agents_future_mask[valid_agents_mask]
     tracks_to_predict = tracks_to_predict[valid_agents_mask]
@@ -204,7 +208,6 @@ def preprocess_worker(file_path: Path, out_dir: Path):
 
     agents_id = data["state/id"].astype(np.int64)[valid_agents_mask]
     agents_type = data["state/type"].astype(np.int64)[valid_agents_mask]
-    # agents_type_one_hot = np.eye(5, dtype=np.float32)[agents_type]
 
     agents_past_x = data["state/past/x"][valid_agents_mask]
     agents_past_y = data["state/past/y"][valid_agents_mask]
@@ -270,7 +273,6 @@ def preprocess_worker(file_path: Path, out_dir: Path):
 
     roadgraph_id = data["roadgraph_samples/id"].astype(np.int64).flatten()[roadgraph_states_mask]
     roadgraph_type = data["roadgraph_samples/type"].astype(np.int64).flatten()[roadgraph_states_mask]
-    # roadgraph_type_one_hot = np.eye(20, dtype=np.float32)[roadgraph_type]
 
     roadgraph_xyz = data["roadgraph_samples/xyz"][roadgraph_states_mask]
     roadgraph_dir = data["roadgraph_samples/dir"][roadgraph_states_mask]
@@ -288,8 +290,15 @@ def preprocess_worker(file_path: Path, out_dir: Path):
     u, v = torch.meshgrid(range_indices, range_indices, indexing="ij")
     edge_indices = torch.stack([u, v], dim=0)
     edge_indices = edge_indices.flatten(1)
+    edge_indices = edge_indices.numpy()
 
-    target_ids = tracks_to_predict.nonzero()[0]
+    # if is_training:
+    #     predictable_mask = agents_future_mask.any(-1) & agents_current_mask.any(-1)
+    # else:
+    #     # TODO: regenerate data
+    #     predictable_mask = tracks_to_predict & agents_current_mask.any(-1)
+    predictable_mask = tracks_to_predict & agents_current_mask.any(-1)
+    target_ids = predictable_mask.nonzero()[0]
 
     np.savez_compressed(
         out_dir / file_path.name,
@@ -308,7 +317,7 @@ def preprocess_worker(file_path: Path, out_dir: Path):
         compacted_roadgraph_id=compacted_roadgraph_id,
         num_valid_agents=num_valid_agents,
         num_valid_roads=num_valid_roads,
-        edge_indices=edge_indices.numpy(),
+        edge_indices=edge_indices,
         target_ids=target_ids,
     )
 
@@ -319,15 +328,18 @@ def preprocess_worker_wrapper(args):
     return preprocess_worker(*args)
 
 
-def preprocess(root_path: Path, out_path: Path, num_workers: int):
+def preprocess(root_path: Path, out_path: Path, num_workers: int, is_training: bool):
     samples = []
     with Pool(processes=num_workers) as p:
         args = [
-            (file_path, out_path)
+            (file_path, out_path, is_training)
             for file_path in root_path.glob("*.npz")
         ]
+        # for arg in args:
+        #     preprocess_worker_wrapper(arg)
+
         samples = list(tqdm(
-            p.imap_unordered(preprocess_worker_wrapper, args, chunksize=num_workers * 8),
+            p.imap_unordered(preprocess_worker_wrapper, args, chunksize=num_workers * 2),
             total=len(args)
         ))
 
@@ -367,7 +379,7 @@ def main():
     if not train_out_path.exists():
         train_out_path.mkdir(parents=True)
     samples = preprocess(
-        root_path / "training", train_out_path, num_workers=args.num_workers
+        root_path / "training", train_out_path, num_workers=args.num_workers, is_training=True
     )
     with open(out_path / "training.json", "w") as f:
         json.dump(samples, f)
@@ -376,7 +388,7 @@ def main():
     if not val_out_path.exists():
         val_out_path.mkdir(parents=True)
     samples = preprocess(
-        root_path / "validation", val_out_path, num_workers=args.num_workers
+        root_path / "validation", val_out_path, num_workers=args.num_workers, is_training=False,
     )
     with open(out_path / "validation.json", "w") as f:
         json.dump(samples, f)
