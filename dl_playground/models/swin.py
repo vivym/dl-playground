@@ -11,7 +11,7 @@ from torchvision.models.swin_transformer import (
 from torchvision.models.resnet import BasicBlock
 
 
-def swin_m(*, weights: Any, progress: bool = True, **kwargs: Any) -> SwinTransformer:
+def swin_m(*, weights: Any = None, progress: bool = True, **kwargs: Any) -> SwinTransformer:
     """
     Constructs a swin_micro architecture from
     `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows <https://arxiv.org/pdf/2103.14030>`_.
@@ -83,7 +83,7 @@ class CNNBlock(nn.Module):
         return x
 
 
-def swin_t_conv1(*, weights: Any, progress: bool = True, **kwargs: Any) -> SwinTransformer:
+def swin_t_conv1(*, weights: Any = None, progress: bool = True, **kwargs: Any) -> SwinTransformer:
     """
     Constructs a swin_tiny_conv architecture from
     `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows <https://arxiv.org/pdf/2103.14030>`_.
@@ -114,7 +114,7 @@ def swin_t_conv1(*, weights: Any, progress: bool = True, **kwargs: Any) -> SwinT
     return model
 
 
-def swin_v2_t_conv1(*, weights: Any, progress: bool = True, **kwargs: Any) -> SwinTransformer:
+def swin_v2_t_conv1(*, weights: Any = None, progress: bool = True, **kwargs: Any) -> SwinTransformer:
     """
     Constructs a swin_v2_tiny_conv architecture from
     `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows <https://arxiv.org/pdf/2103.14030>`_.
@@ -147,7 +147,7 @@ def swin_v2_t_conv1(*, weights: Any, progress: bool = True, **kwargs: Any) -> Sw
     return model
 
 
-def swin_v2_t_conv2(*, weights: Any, progress: bool = True, **kwargs: Any) -> SwinTransformer:
+def swin_v2_t_conv2(*, weights: Any = None, progress: bool = True, **kwargs: Any) -> SwinTransformer:
     """
     Constructs a swin_v2_tiny_conv architecture from
     `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows <https://arxiv.org/pdf/2103.14030>`_.

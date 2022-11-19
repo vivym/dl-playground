@@ -3,6 +3,8 @@
 /dl_playground/version.py
 /results
 
+*_pb2.py
+
 .DS_Store
 
 !.gitkeep

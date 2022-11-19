@@ -1,8 +1,10 @@
 import json
+import pickle
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List
 
+import lz4.frame as lz4
 import numpy as np
 import pytorch_lightning as pl
 import torch
@@ -58,6 +60,8 @@ def collate_fn(samples):
         target_current_states, target_future_states,
         target_future_mask, target_indices, edge_indices,
         agents_timestamp,
+        rasterized_maps, gt_rasterized_trajs, gt_rasterized_masks,
+        meta_infos,
     ) = map(list, zip(*samples))
 
     agents_polylines, num_agents = Polylines.collate(agents_polylines)
@@ -90,11 +94,26 @@ def collate_fn(samples):
 
     agents_timestamp = torch.cat(agents_timestamp, dim=0)
 
+    if rasterized_maps[0] is not None:
+        rasterized_maps = torch.stack(rasterized_maps, dim=0)
+    else:
+        rasterized_maps = None
+    if gt_rasterized_trajs[0] is not None:
+        gt_rasterized_trajs = torch.stack(gt_rasterized_trajs, dim=0)
+    else:
+        gt_rasterized_trajs = None
+    if gt_rasterized_masks[0] is not None:
+        gt_rasterized_masks = torch.stack(gt_rasterized_masks, dim=0)
+    else:
+        gt_rasterized_masks = None
+
     return (
         agents_polylines, roadgraph_polylines,
         target_current_states, target_future_states, target_future_mask,
         target_indices, target_node_indices, edge_indices,
         agents_timestamp,
+        rasterized_maps, gt_rasterized_trajs, gt_rasterized_masks,
+        meta_infos,
     )
 
 
@@ -104,12 +123,14 @@ class WaymoMotionDataset(Dataset):
         root_path: Path,
         split: str,
         load_interval: int = 1,
+        use_rasterized_data: bool = False,
     ):
         super().__init__()
 
         self.root_path = root_path
         self.split = split
         self.load_interval = load_interval
+        self.use_rasterized_data = use_rasterized_data
 
         with open(root_path / f"{split}.json") as f:
             samples = json.load(f)
@@ -119,10 +140,9 @@ class WaymoMotionDataset(Dataset):
                 (scenario_id, target_ids)
                 for scenario_id, target_ids in samples.items()
             ]
-            self.samples = samples[::load_interval]
         elif split in ["testing"]:
-            assert load_interval == 1, load_interval
-            self.samples = [
+            # assert load_interval == 1, load_interval
+            samples = [
                 (scenario_id, [target_id])
                 for scenario_id, target_ids in samples.items()
                 for target_id in target_ids
@@ -130,8 +150,29 @@ class WaymoMotionDataset(Dataset):
         else:
             raise ValueError(split)
 
+        self.samples = samples[::load_interval]
+
     def __len__(self):
         return len(self.samples)
+
+    def load_rasterized_data(self, scenario_id: str, target_agent_id: int):
+        file_path = self.root_path.parent / "rasterized" / self.split / f"{scenario_id}.lz4"
+        with open(file_path, "rb") as f:
+            bytes = lz4.decompress(f.read())
+            data = pickle.loads(bytes)
+            data = {
+                int(item["object_id"]): item
+                for item in data
+            }
+
+        data = data[target_agent_id]
+
+        rasterized_map = data["raster"].astype(np.float32)
+        rasterized_map = rasterized_map.transpose(2, 1, 0) / 255.
+        gt_traj = data["gt_marginal"]
+        gt_mask = data["future_val_marginal"]
+
+        return rasterized_map, gt_traj, gt_mask
 
     def load_data(self, index: int):
         scenario_id, target_ids = self.samples[index]
@@ -139,6 +180,7 @@ class WaymoMotionDataset(Dataset):
 
         data = np.load(file_path)
 
+        agents_id = data["agents_id"]
         agents_type = data["agents_type"]
         agents_states = data["agents_states"]
         agents_timestamp = data["agents_timestamp"]
@@ -214,21 +256,47 @@ class WaymoMotionDataset(Dataset):
 
         edge_indices = torch.from_numpy(edge_indices)
 
+        if self.use_rasterized_data:
+            target_agent_id = agents_id[target_index]
+            rasterized_map, gt_rasterized_traj, gt_rasterized_mask = self.load_rasterized_data(
+                scenario_id, target_agent_id
+            )
+            rasterized_map = torch.from_numpy(rasterized_map)
+            gt_rasterized_traj = torch.from_numpy(gt_rasterized_traj)
+            gt_rasterized_mask = torch.from_numpy(gt_rasterized_mask)
+        else:
+            rasterized_map, gt_rasterized_traj, gt_rasterized_mask = None, None, None
+
+        if self.split == "testing":
+            meta_info = {
+                "scenario_id": scenario_id,
+                "target_agent_id": agents_id[target_index],
+                "target_current_xy": target_current_xy,
+                "rot_matrix": rot_matrix,
+            }
+        else:
+            meta_info = None
+
         return (
             agents_polylines, roadgraph_polylines,
             target_current_states, target_future_states,
             target_future_mask, target_index, edge_indices,
             agents_timestamp,
+            rasterized_map, gt_rasterized_traj, gt_rasterized_mask,
+            meta_info,
         )
 
     def __getitem__(self, index: int):
         while True:
-            data = self.load_data(index)
-            if data is not None:
-                return data
+            try:
+                data = self.load_data(index)
+                if data is not None:
+                    return data
+            except Exception as e:
+                raise e
 
             index += 1
-            if index >= len(self.paths):
+            if index >= len(self):
                 index = 0
 
 
@@ -236,6 +304,7 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
     def __init__(
         self,
         root_path: str,
+        use_rasterized_data: bool = False,
         train_interval: int = 1,
         val_interval: int = 1,
         test_interval: int = 1,
@@ -248,6 +317,7 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
         self.save_hyperparameters()
 
         self.root_path = Path(root_path)
+        self.use_rasterized_data = use_rasterized_data
         self.train_interval = train_interval
         self.val_interval = val_interval
         self.test_interval = test_interval
@@ -261,6 +331,7 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
             root_path=self.root_path,
             split="training",
             load_interval=self.train_interval,
+            use_rasterized_data=self.use_rasterized_data,
         )
 
         return DataLoader(
@@ -277,6 +348,7 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
             root_path=self.root_path,
             split="validation",
             load_interval=self.val_interval,
+            use_rasterized_data=self.use_rasterized_data,
         )
 
         return DataLoader(
@@ -293,6 +365,7 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
             root_path=self.root_path,
             split="testing",
             load_interval=self.test_interval,
+            use_rasterized_data=self.use_rasterized_data,
         )
 
         return DataLoader(
