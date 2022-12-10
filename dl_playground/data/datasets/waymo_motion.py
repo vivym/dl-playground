@@ -77,20 +77,40 @@ def collate_fn(samples):
 
     num_nodes = [a + r for a, r in zip(num_agents, num_roads)]
     offset_agent = 0
-    offset_node = 0
     for i in range(batch_size):
         target_indices[i] += offset_agent
-        target_node_indices[i] += offset_node
-        offset_agent += num_agents[i]
-        offset_node += num_nodes[i]
+        target_node_indices[i] += offset_agent
 
-    offset = 0
+    offset_agent = 0
+    offset_road = sum(num_agents)
+    offset_extra = sum(num_agents) + sum(num_roads)
     edge_indices_list = []
-    for edge_indices_i, num_nodes_i in zip(edge_indices, num_nodes):
+    for edge_indices_i, num_nodes_i, num_agents_i, num_roads_i in zip(
+        edge_indices, num_nodes, num_agents, num_roads
+    ):
         num_edges_i = edge_indices_i.shape[1]
-        assert num_nodes_i ** 2 == num_edges_i
-        edge_indices_list.append(edge_indices_i + offset)
-        offset += num_nodes_i
+        agent_mask = edge_indices_i < num_agents_i
+        road_mask = (edge_indices_i >= num_agents_i) & (edge_indices_i < (num_agents_i + num_roads_i))
+
+        if num_edges_i > num_nodes_i ** 2:
+            num_extra_edges = num_edges_i - num_nodes_i ** 2
+            num_extra_features = num_extra_edges // (num_agents_i + num_roads_i)
+            assert num_extra_features * (num_agents_i + num_roads_i) == num_extra_edges
+
+            extra_mask = edge_indices_i >= (num_agents_i + num_roads_i)
+        else:
+            num_extra_features = 0
+            extra_mask = None
+
+        edge_indices_i[agent_mask] += offset_agent
+        edge_indices_i[road_mask] += (offset_road - num_agents_i)
+        if extra_mask is not None:
+            edge_indices_i[extra_mask] += (offset_extra - num_agents_i - num_roads_i)
+
+        edge_indices_list.append(edge_indices_i)
+        offset_agent += num_agents_i
+        offset_road += num_roads_i
+        offset_extra += num_extra_features
     edge_indices = torch.cat(edge_indices_list, dim=-1)
 
     agents_timestamp = torch.cat(agents_timestamp, dim=0)
@@ -127,6 +147,7 @@ class WaymoMotionDataset(Dataset):
         load_interval: int = 1,
         use_rasterized_data: bool = False,
         use_vectorized_data_2021: bool = False,
+        num_extra_features: int = 0,
     ):
         super().__init__()
 
@@ -135,6 +156,7 @@ class WaymoMotionDataset(Dataset):
         self.load_interval = load_interval
         self.use_rasterized_data = use_rasterized_data
         self.use_vectorized_data_2021 = use_vectorized_data_2021
+        self.num_extra_features = num_extra_features
 
         with open(root_path / f"{split}.json") as f:
             samples = json.load(f)
@@ -213,6 +235,8 @@ class WaymoMotionDataset(Dataset):
         roadgraph_states = data["roadgraph_states"]
         compacted_roadgraph_id = data["compacted_roadgraph_id"]
         edge_indices = data["edge_indices"]
+        num_valid_agents = data["num_valid_agents"]
+        num_valid_roads = data["num_valid_roads"]
 
         # add agent type embedding
         agents_type = agents_type[agents_agg_indices]
@@ -276,6 +300,15 @@ class WaymoMotionDataset(Dataset):
 
         edge_indices = torch.from_numpy(edge_indices)
 
+        if self.num_extra_features > 0:
+            u_indices = torch.arange(self.num_extra_features, dtype=torch.int64)
+            u_indices += num_valid_agents + num_valid_roads
+            v_indices = torch.arange(num_valid_agents + num_valid_roads, dtype=torch.int64)
+            u, v = torch.meshgrid(u_indices, v_indices, indexing="ij")
+            extra_indices = torch.stack([u, v], dim=0)
+            extra_indices = extra_indices.flatten(1)
+            edge_indices = torch.cat([edge_indices, extra_indices], dim=1)
+
         if self.use_rasterized_data:
             target_agent_id = agents_id[target_index]
             rasterized_map, gt_rasterized_traj, gt_rasterized_mask = self.load_rasterized_data(
@@ -331,6 +364,7 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
         self,
         root_path: str,
         use_rasterized_data: bool = False,
+        num_extra_features: int = 0,
         train_interval: int = 1,
         val_interval: int = 1,
         test_interval: int = 1,
@@ -344,6 +378,7 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
 
         self.root_path = Path(root_path)
         self.use_rasterized_data = use_rasterized_data
+        self.num_extra_features = num_extra_features
         self.train_interval = train_interval
         self.val_interval = val_interval
         self.test_interval = test_interval
@@ -358,6 +393,7 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
             split="training",
             load_interval=self.train_interval,
             use_rasterized_data=self.use_rasterized_data,
+            num_extra_features=self.num_extra_features,
         )
 
         return DataLoader(
@@ -375,6 +411,7 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
             split="validation",
             load_interval=self.val_interval,
             use_rasterized_data=self.use_rasterized_data,
+            num_extra_features=self.num_extra_features,
         )
 
         return DataLoader(
@@ -392,6 +429,7 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
             split="testing",
             load_interval=self.test_interval,
             use_rasterized_data=self.use_rasterized_data,
+            num_extra_features=self.num_extra_features,
         )
 
         return DataLoader(
@@ -410,6 +448,7 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
             load_interval=self.val_interval,
             use_rasterized_data=self.use_rasterized_data,
             use_vectorized_data_2021=True,
+            num_extra_features=self.num_extra_features,
         )
 
         return DataLoader(

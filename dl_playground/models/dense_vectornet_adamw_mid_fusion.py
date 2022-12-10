@@ -57,6 +57,7 @@ class DenseVectorNet(pl.LightningModule):
 
         self.agent_in_channels = agent_in_channels
         self.roadmap_in_channels = roadmap_in_channels
+        self.num_channels = num_channels
         self.learning_rate = learning_rate
         self.max_epochs = max_epochs
 
@@ -91,8 +92,9 @@ class DenseVectorNet(pl.LightningModule):
             )
         )
         self.dense_net.conv1.reset_parameters()
-        self.dense_net.reduce = nn.Linear(512, num_channels)
+        self.dense_net.reduce = nn.Conv2d(512, num_channels, kernel_size=1)
         self.dense_net.fc = nn.Linear(self.dense_net.fc.in_features, dense_net_out_channels)
+        self.dense_net._forward_impl = partial(_forward_impl, self.dense_net)
 
     def forward(
         self,
@@ -105,7 +107,7 @@ class DenseVectorNet(pl.LightningModule):
         rasterized_maps: torch.Tensor,
     ):
         dense_features, feature_maps = self.dense_net(rasterized_maps)
-        feature_maps = feature_maps.flatten(2).permute(0, 2, 1)
+        feature_maps = feature_maps.flatten(2).permute(0, 2, 1).reshape(-1, self.num_channels)
 
         agents_te = self.agent_temporal_encoding(agents_timestamp)
 
@@ -117,7 +119,7 @@ class DenseVectorNet(pl.LightningModule):
         roadgraph_polyline_features = self.roadmap_subgraph(roadgraph_polylines)
 
         graph_in_features = torch.cat([
-            agent_polyline_features, roadgraph_polyline_features
+            agent_polyline_features, roadgraph_polyline_features, feature_maps
         ], dim=0)
         graph_out_features = self.global_graph(graph_in_features, edge_indices)
         graph_features = torch.cat([graph_out_features, graph_in_features], dim=-1)
