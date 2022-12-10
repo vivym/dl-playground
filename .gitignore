@@ -2,6 +2,7 @@
 /wandb
 /dl_playground/version.py
 /results
+/vis
 
 *_pb2.py
 

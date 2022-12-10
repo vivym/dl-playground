@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Optional, List, Tuple
 
 import pytorch_lightning as pl
@@ -12,6 +13,26 @@ from dl_playground.layers.positional_encoding import (
 )
 
 from .vectornet import SubGraph, GlobalGraph, Decoder
+
+
+def _forward_impl(self, x: torch.Tensor) -> torch.Tensor:
+    x = self.conv1(x)
+    x = self.bn1(x)
+    x = self.relu(x)
+    x = self.maxpool(x)
+
+    x = self.layer1(x)
+    x = self.layer2(x)
+    x = self.layer3(x)
+    x = self.layer4(x)
+
+    feature_maps = self.reduce(x)
+
+    x = self.avgpool(x)
+    x = torch.flatten(x, 1)
+    x = self.fc(x)
+
+    return x, feature_maps
 
 
 class DenseVectorNet(pl.LightningModule):
@@ -70,6 +91,7 @@ class DenseVectorNet(pl.LightningModule):
             )
         )
         self.dense_net.conv1.reset_parameters()
+        self.dense_net.reduce = nn.Linear(512, num_channels)
         self.dense_net.fc = nn.Linear(self.dense_net.fc.in_features, dense_net_out_channels)
 
     def forward(
@@ -82,7 +104,8 @@ class DenseVectorNet(pl.LightningModule):
         agents_timestamp: torch.Tensor,
         rasterized_maps: torch.Tensor,
     ):
-        dense_features = self.dense_net(rasterized_maps)
+        dense_features, feature_maps = self.dense_net(rasterized_maps)
+        feature_maps = feature_maps.flatten(2).permute(0, 2, 1)
 
         agents_te = self.agent_temporal_encoding(agents_timestamp)
 
@@ -222,9 +245,10 @@ class DenseVectorNet(pl.LightningModule):
         torch.save(outputs, "results/outputs.pt")
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(
+        optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, self.parameters()),
             lr=self.learning_rate,
+            amsgrad=True,
         )
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=self.max_epochs

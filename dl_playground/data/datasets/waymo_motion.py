@@ -62,6 +62,7 @@ def collate_fn(samples):
         agents_timestamp,
         rasterized_maps, gt_rasterized_trajs, gt_rasterized_masks,
         meta_infos,
+        vectorized_maps,
     ) = map(list, zip(*samples))
 
     agents_polylines, num_agents = Polylines.collate(agents_polylines)
@@ -114,6 +115,7 @@ def collate_fn(samples):
         agents_timestamp,
         rasterized_maps, gt_rasterized_trajs, gt_rasterized_masks,
         meta_infos,
+        vectorized_maps,
     )
 
 
@@ -124,6 +126,7 @@ class WaymoMotionDataset(Dataset):
         split: str,
         load_interval: int = 1,
         use_rasterized_data: bool = False,
+        use_vectorized_data_2021: bool = False,
     ):
         super().__init__()
 
@@ -131,6 +134,7 @@ class WaymoMotionDataset(Dataset):
         self.split = split
         self.load_interval = load_interval
         self.use_rasterized_data = use_rasterized_data
+        self.use_vectorized_data_2021 = use_vectorized_data_2021
 
         with open(root_path / f"{split}.json") as f:
             samples = json.load(f)
@@ -173,6 +177,22 @@ class WaymoMotionDataset(Dataset):
         gt_mask = data["future_val_marginal"]
 
         return rasterized_map, gt_traj, gt_mask
+
+    def load_vectorized_data_2021(self, scenario_id: str, target_agent_id: int):
+        file_path = self.root_path.parent / "rasterized_vec" / self.split / f"{scenario_id}.lz4"
+        with open(file_path, "rb") as f:
+            bytes = lz4.decompress(f.read())
+            data = pickle.loads(bytes)
+            data = {
+                int(item["object_id"]): item
+                for item in data
+            }
+
+        data = data[target_agent_id]
+
+        vectorized_map = data["RES"]
+
+        return vectorized_map
 
     def load_data(self, index: int):
         scenario_id, target_ids = self.samples[index]
@@ -267,15 +287,20 @@ class WaymoMotionDataset(Dataset):
         else:
             rasterized_map, gt_rasterized_traj, gt_rasterized_mask = None, None, None
 
-        if self.split == "testing":
-            meta_info = {
-                "scenario_id": scenario_id,
-                "target_agent_id": agents_id[target_index],
-                "target_current_xy": target_current_xy,
-                "rot_matrix": rot_matrix,
-            }
+        if self.use_vectorized_data_2021:
+            target_agent_id = agents_id[target_index]
+            vectorized_map = self.load_vectorized_data_2021(
+                scenario_id, target_agent_id
+            )
         else:
-            meta_info = None
+            vectorized_map = None
+
+        meta_info = {
+            "scenario_id": scenario_id,
+            "target_agent_id": agents_id[target_index],
+            "target_current_xy": target_current_xy,
+            "rot_matrix": rot_matrix,
+        }
 
         return (
             agents_polylines, roadgraph_polylines,
@@ -284,6 +309,7 @@ class WaymoMotionDataset(Dataset):
             agents_timestamp,
             rasterized_map, gt_rasterized_traj, gt_rasterized_mask,
             meta_info,
+            vectorized_map,
         )
 
     def __getitem__(self, index: int):
@@ -371,6 +397,24 @@ class WaymoMotionDataLoader(pl.LightningDataModule):
         return DataLoader(
             dataset,
             batch_size=self.test_batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=True,
+            collate_fn=collate_fn,
+        )
+
+    def vis_dataloader(self):
+        dataset = WaymoMotionDataset(
+            root_path=self.root_path,
+            split="validation",
+            load_interval=self.val_interval,
+            use_rasterized_data=self.use_rasterized_data,
+            use_vectorized_data_2021=True,
+        )
+
+        return DataLoader(
+            dataset,
+            batch_size=self.val_batch_size,
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
